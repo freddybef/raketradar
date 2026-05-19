@@ -1,0 +1,27 @@
+[RaketRadar Copilot] Supabase insert failed {
+  code: null,
+  message: '[object Object]',
+  details: null,
+  hint: null,
+  missingColumn: null,
+  payloadKeys: [
+    'role',
+    'message',
+    'normalized_query',
+    'detected_tickers',
+    'resolved_entities',
+    'context_payload',
+    'confidence',
+    'source',
+    'session_id'
+  ],
+  role: 'assistant',
+  messageLength: 1446,
+  detectedTickersCount: 1,
+  contextPayloadBytes: 17768737
+}
+[RaketRadar Copilot] message persistence failed {
+  stage: 'save_assistant_message',
+  message: 'Copilot persistence failed: no_code [object Object]',
+  stack: undefined
+}

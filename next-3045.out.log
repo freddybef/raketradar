@@ -1,0 +1,8 @@
+
+> raketradar-core@0.1.0 start
+> next start --port 3045
+
+▲ Next.js 16.2.6
+- Local:         http://localhost:3045
+- Network:       http://192.168.0.170:3045
+✓ Ready in 240ms

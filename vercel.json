@@ -1,0 +1,20 @@
+{
+  "crons": [
+    {
+      "path": "/api/intelligence/run",
+      "schedule": "45,50,55 6 * * 1-5"
+    },
+    {
+      "path": "/api/intelligence/run",
+      "schedule": "0,5,10,15 7 * * 1-5"
+    },
+    {
+      "path": "/api/intelligence/run",
+      "schedule": "*/10 7-15 * * 1-5"
+    },
+    {
+      "path": "/api/intelligence/run",
+      "schedule": "0 16,18 * * 1-5"
+    }
+  ]
+}
