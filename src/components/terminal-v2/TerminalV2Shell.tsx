@@ -72,6 +72,15 @@ interface CanonicalTradingSnapshot {
   marketQuality: {
     label: string;
   };
+  newsProviderStatus: {
+    providerName: string;
+    mode: "mock" | "manual" | "rss" | "api" | "disabled";
+    isLive: boolean;
+    isConfigured: boolean;
+    lastFetchAt: string;
+    error: string | null;
+    headlineCount: number;
+  };
   whatChanged: Array<{
     ticker: string;
     changeType: string;
@@ -151,6 +160,23 @@ interface CanonicalTradingSnapshot {
     secondDerivativeScore: number;
     repricingPotential: number;
     summary: string;
+  }>;
+  earlyRadar: Array<{
+    ticker: string;
+    company?: string | null;
+    rank: number;
+    radarReason: string;
+    preOpenTrigger: string;
+    narrativeTriggerType: string;
+    triggerStrength: number;
+    marketCapSensitivity: number;
+    secondDerivativeScore: number;
+    watchBeforeOpen: boolean;
+    confirmationNeeded: string;
+    invalidation: string;
+    priorityScore: number;
+    source: "newsTrigger" | "trackedMemory" | "candidate" | "hybrid";
+    status: "PREOPEN_WATCH" | "OPEN_CONFIRMATION_NEEDED" | "ACTIVE_CONFIRMED" | "REJECTED";
   }>;
   breadth: {
     hot: TradingCandidate[];
@@ -273,6 +299,22 @@ function signalFreshnessLabel(quality?: string) {
   return "WATCH";
 }
 
+function ageMinutes(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+  return `${Math.max(0, Math.round((Date.now() - date.getTime()) / 60_000))}m`;
+}
+
+function newsModeLabel(mode: string, isLive: boolean) {
+  if (isLive && mode === "rss") return "RSS LIVE";
+  if (isLive) return "LIVE";
+  if (mode === "mock") return "MOCK - ej livefeed";
+  if (mode === "manual") return "MANUAL - ej livefeed";
+  if (mode === "disabled") return "DISABLED";
+  if (mode === "rss") return "RSS ERROR";
+  return mode.toUpperCase();
+}
+
 function narrativeLabel(type?: string) {
   const labels: Record<string, string> = {
     REPORT_REPRICING: "Rapport-repricing",
@@ -325,7 +367,7 @@ function EdgeRow({ candidate, onOpen }: { candidate: TradingCandidate; onOpen: (
     <button
       type="button"
       onClick={() => onOpen(candidate)}
-      className="w-full rounded border border-zinc-800 bg-zinc-950/80 p-3 text-left transition hover:border-cyan-800 hover:bg-zinc-900/80"
+      className="w-full cursor-pointer rounded border border-zinc-800 bg-zinc-950/80 p-3 text-left transition hover:border-cyan-800 hover:bg-zinc-900/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-500"
     >
       <div className="grid gap-3 md:grid-cols-[130px_1fr_90px_90px_110px] md:items-start">
         <div>
@@ -375,7 +417,7 @@ function MiniCase({ candidate, onOpen }: { candidate: TradingCandidate; onOpen: 
     <button
       type="button"
       onClick={() => onOpen(candidate)}
-      className="rounded border border-zinc-800 bg-zinc-950/70 p-3 text-left text-sm transition hover:border-cyan-800"
+      className="cursor-pointer rounded border border-zinc-800 bg-zinc-950/70 p-3 text-left text-sm transition hover:border-cyan-800 hover:bg-zinc-900/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-500"
     >
       <div className="flex items-center justify-between gap-2">
         <span className="font-semibold text-zinc-100">{candidate.ticker}</span>
@@ -390,6 +432,9 @@ function MiniCase({ candidate, onOpen }: { candidate: TradingCandidate; onOpen: 
 
 type PriorityItem = CanonicalTradingSnapshot["priorityBoard"][number];
 type NewsTriggerItem = CanonicalTradingSnapshot["newsTriggers"][number];
+type TrackedItem = CanonicalTradingSnapshot["trackedUniverse"][number];
+type PositionItem = CanonicalTradingSnapshot["positionManagement"][number];
+type EarlyRadarItem = CanonicalTradingSnapshot["earlyRadar"][number];
 
 function candidateFromPriority(snapshot: CanonicalTradingSnapshot, item: PriorityItem): TradingCandidate {
   const candidate =
@@ -507,6 +552,171 @@ function candidateFromNewsTrigger(snapshot: CanonicalTradingSnapshot, item: News
     repricingProbability: item.repricingPotential,
     marketAttentionShift: 0,
     hasFreshFundamentalCatalyst: item.isFreshToday && item.narrativeTriggerType !== "UNKNOWN",
+  };
+}
+
+function candidateFromTracked(snapshot: CanonicalTradingSnapshot, item: TrackedItem): TradingCandidate {
+  const candidate =
+    item.candidate ??
+    snapshot.candidates.find((entry) => entry.ticker === item.ticker) ??
+    Object.values(snapshot.breadth).flat().find((entry) => entry.ticker === item.ticker);
+  if (candidate) return candidate;
+  const priority = snapshot.priorityBoard.find((entry) => entry.ticker === item.ticker);
+  if (priority) return candidateFromPriority(snapshot, priority);
+  const position = snapshot.positionManagement.find((entry) => entry.ticker === item.ticker);
+  return {
+    ticker: item.ticker,
+    company: item.company ?? item.ticker,
+    exchange: "Tracked / Market Memory",
+    action: item.status === "activeCandidate" ? "Bevaka" : "Undvik",
+    setupType: item.lastKnownState ?? "Tracked memory",
+    thesis: item.summary,
+    pros: [item.status === "recentlyActive" ? "nyligen aktiv" : null, item.lastKnownScore ? `senaste score ${item.lastKnownScore}` : null].filter((entry): entry is string => Boolean(entry)),
+    cons: [item.status !== "activeCandidate" ? "saknar färsk aktiv kandidatstatus" : null].filter((entry): entry is string => Boolean(entry)),
+    trigger: position?.trigger ?? "återkommer i Live Edge Board eller får ny news/volume confirmation",
+    invalidation: position?.invalidation ?? "fortsätter sakna färsk livebekräftelse",
+    continuation: 0,
+    risk: position?.risk ?? 55,
+    rvol: 0,
+    movePct: 0,
+    source: `Tracked universe / ${item.source}`,
+    sourceBucket: "WATCH",
+    changed: item.lastKnownState ? `Senast känd state: ${item.lastKnownState}` : null,
+    personality: "Market memory",
+    whyNow: item.summary,
+    needsNow: position?.suggestedAction ?? "vänta på färsk bekräftelse",
+    catalystType: "unknown",
+    catalystScore: 0,
+    catalystSummary: position?.reason ?? item.summary,
+    freshnessStatus: item.status === "recentlyActive" ? "recentMemory" : "stale",
+    dataAgeMinutes: 0,
+    isActiveToday: false,
+    firstSeenAt: null,
+    lastConfirmedAt: null,
+    freshnessMinutes: 24 * 60,
+    momentumAge: 24 * 60,
+    confirmationCount: 0,
+    lastExpansionAt: null,
+    decayScore: 60,
+    staleReason: "tracked ticker utan färsk aktiv kandidat i snapshot",
+    signalQuality: "STALLED",
+    narrativeTriggerType: "UNKNOWN",
+    narrativeStrength: 0,
+    narrativeFreshness: 0,
+    thematicTailwind: 0,
+    repricingProbability: 0,
+    marketAttentionShift: 0,
+    hasFreshFundamentalCatalyst: false,
+  };
+}
+
+function candidateFromPosition(snapshot: CanonicalTradingSnapshot, item: PositionItem): TradingCandidate {
+  const candidate =
+    snapshot.candidates.find((entry) => entry.ticker === item.ticker) ??
+    Object.values(snapshot.breadth).flat().find((entry) => entry.ticker === item.ticker) ??
+    snapshot.trackedUniverse.find((entry) => entry.ticker === item.ticker)?.candidate;
+  if (candidate) return candidate;
+  const priority = snapshot.priorityBoard.find((entry) => entry.ticker === item.ticker);
+  if (priority) return candidateFromPriority(snapshot, priority);
+  return {
+    ticker: item.ticker,
+    company: item.company ?? item.ticker,
+    exchange: "Position Management",
+    action: item.suggestedAction === "sell" || item.suggestedAction === "trim" ? "Het men jaga inte" : "Bevaka",
+    setupType: item.state,
+    thesis: item.decisionLabel ?? item.decision,
+    pros: [item.confidenceTrend === "up" ? "confidence trend upp" : null].filter((entry): entry is string => Boolean(entry)),
+    cons: [item.reason ?? item.why, `risk ${item.risk ?? "-"}/100`],
+    trigger: item.trigger,
+    invalidation: item.invalidation,
+    continuation: 0,
+    risk: item.risk ?? 55,
+    rvol: 0,
+    movePct: 0,
+    source: `Position Management / ${item.sourceStatus ?? item.source}`,
+    sourceBucket: item.suggestedAction === "sell" ? "RISK" : "WATCH",
+    changed: item.whatChanged,
+    personality: item.state,
+    whyNow: item.reason ?? item.why,
+    needsNow: item.suggestedAction ?? item.decision,
+    catalystType: "unknown",
+    catalystScore: 0,
+    catalystSummary: item.reason ?? item.why,
+    freshnessStatus: item.sourceStatus === "activeCandidate" ? "activeToday" : "recentMemory",
+    dataAgeMinutes: 0,
+    isActiveToday: item.sourceStatus === "activeCandidate",
+    firstSeenAt: null,
+    lastConfirmedAt: null,
+    freshnessMinutes: 24 * 60,
+    momentumAge: 24 * 60,
+    confirmationCount: item.sourceStatus === "activeCandidate" ? 1 : 0,
+    lastExpansionAt: null,
+    decayScore: item.sourceStatus === "activeCandidate" ? 25 : 55,
+    staleReason: item.sourceStatus === "activeCandidate" ? null : "position finns men saknar färsk aktiv kandidatstatus",
+    signalQuality: item.sourceStatus === "activeCandidate" ? "EARLY_WATCH" : "STALLED",
+    narrativeTriggerType: "UNKNOWN",
+    narrativeStrength: 0,
+    narrativeFreshness: 0,
+    thematicTailwind: 0,
+    repricingProbability: 0,
+    marketAttentionShift: 0,
+    hasFreshFundamentalCatalyst: false,
+  };
+}
+
+function candidateFromEarlyRadar(snapshot: CanonicalTradingSnapshot, item: EarlyRadarItem): TradingCandidate {
+  const candidate =
+    snapshot.candidates.find((entry) => entry.ticker === item.ticker) ??
+    Object.values(snapshot.breadth).flat().find((entry) => entry.ticker === item.ticker) ??
+    snapshot.trackedUniverse.find((entry) => entry.ticker === item.ticker)?.candidate;
+  if (candidate) return candidate;
+  const trigger = snapshot.newsTriggers.find((entry) => entry.ticker?.toUpperCase() === item.ticker);
+  if (trigger) return candidateFromNewsTrigger(snapshot, trigger);
+  const tracked = snapshot.trackedUniverse.find((entry) => entry.ticker === item.ticker);
+  if (tracked) return candidateFromTracked(snapshot, tracked);
+  return {
+    ticker: item.ticker,
+    company: item.company ?? item.ticker,
+    exchange: "Pre-open / Early Radar",
+    action: item.status === "ACTIVE_CONFIRMED" ? "Bevaka" : item.status === "REJECTED" ? "Undvik" : "Bevaka",
+    setupType: item.status,
+    thesis: item.radarReason,
+    pros: [`triggerstyrka ${item.triggerStrength}/100`, item.secondDerivativeScore >= 60 ? "second-derivative tailwind" : null].filter((entry): entry is string => Boolean(entry)),
+    cons: [item.status !== "ACTIVE_CONFIRMED" ? "kräver öppningsbekräftelse" : null].filter((entry): entry is string => Boolean(entry)),
+    trigger: item.confirmationNeeded,
+    invalidation: item.invalidation,
+    continuation: 0,
+    risk: item.status === "REJECTED" ? 80 : 50,
+    rvol: 0,
+    movePct: 0,
+    source: `Early Radar / ${item.source}`,
+    sourceBucket: "WATCH",
+    changed: null,
+    personality: item.status,
+    whyNow: item.radarReason,
+    needsNow: item.confirmationNeeded,
+    catalystType: "news_expansion",
+    catalystScore: item.triggerStrength,
+    catalystSummary: item.preOpenTrigger,
+    freshnessStatus: "premarketContext",
+    dataAgeMinutes: 0,
+    isActiveToday: item.status === "ACTIVE_CONFIRMED",
+    firstSeenAt: null,
+    lastConfirmedAt: null,
+    freshnessMinutes: 0,
+    momentumAge: 0,
+    confirmationCount: item.status === "ACTIVE_CONFIRMED" ? 2 : 1,
+    lastExpansionAt: null,
+    decayScore: item.status === "ACTIVE_CONFIRMED" ? 20 : 35,
+    staleReason: null,
+    signalQuality: item.status === "ACTIVE_CONFIRMED" ? "ACTIVE_CONTINUATION" : "EARLY_WATCH",
+    narrativeTriggerType: item.narrativeTriggerType,
+    narrativeStrength: item.triggerStrength,
+    narrativeFreshness: 80,
+    thematicTailwind: item.secondDerivativeScore,
+    repricingProbability: item.priorityScore,
+    marketAttentionShift: 0,
+    hasFreshFundamentalCatalyst: item.source === "newsTrigger" || item.source === "hybrid",
   };
 }
 
@@ -792,7 +1002,7 @@ export function TerminalV2Shell() {
                   key={`priority-${item.ticker}-${item.priorityState}`}
                   type="button"
                   onClick={() => setSelectedCase(candidateFromPriority(snapshot, item))}
-                  className="grid w-full cursor-pointer gap-2 rounded border border-zinc-800 bg-zinc-950/70 p-3 text-left text-sm transition hover:border-cyan-800 hover:bg-zinc-900/80 md:grid-cols-[120px_130px_1fr_90px] md:items-center"
+                  className="grid w-full cursor-pointer gap-2 rounded border border-zinc-800 bg-zinc-950/70 p-3 text-left text-sm transition hover:border-cyan-800 hover:bg-zinc-900/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-500 md:grid-cols-[120px_130px_1fr_90px] md:items-center"
                 >
                   <div>
                     <div className="font-semibold text-zinc-100">{item.ticker}</div>
@@ -819,15 +1029,53 @@ export function TerminalV2Shell() {
           )}
         </Section>
 
+        <Section title="Pre-open / Early Radar">
+          {snapshot.earlyRadar.length > 0 ? (
+            <div className="space-y-2">
+              {snapshot.earlyRadar.slice(0, 10).map((item) => (
+                <button
+                  key={`early-radar-${item.ticker}-${item.rank}`}
+                  type="button"
+                  onClick={() => setSelectedCase(candidateFromEarlyRadar(snapshot, item))}
+                  className="grid w-full cursor-pointer gap-2 rounded border border-zinc-800 bg-zinc-950/70 p-3 text-left text-sm transition hover:border-violet-700 hover:bg-zinc-900/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 md:grid-cols-[70px_120px_1fr_1fr_80px] md:items-center"
+                >
+                  <div className="text-xs text-zinc-500">#{item.rank}</div>
+                  <div>
+                    <div className="font-semibold text-zinc-100">{item.ticker}</div>
+                    <div className="text-[11px] text-zinc-600">{item.company}</div>
+                  </div>
+                  <div>
+                    <div className="text-zinc-200">{narrativeLabel(item.narrativeTriggerType)}</div>
+                    <div className="line-clamp-1 text-xs text-zinc-500">{item.preOpenTrigger}</div>
+                  </div>
+                  <div className="line-clamp-2 text-xs text-zinc-400">{item.confirmationNeeded}</div>
+                  <div className="text-xs text-zinc-500">{item.priorityScore}/100</div>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-zinc-400">Inga pre-open radarcase i senaste snapshot. Gamla movers rankas inte utan ny trigger idag.</p>
+          )}
+        </Section>
+
         <Section title="News Trigger Inbox">
+          <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
+            <span>{snapshot.newsProviderStatus.providerName}</span>
+            <span className={`rounded border px-2 py-0.5 ${snapshot.newsProviderStatus.isLive ? "border-emerald-700/60 bg-emerald-950/30 text-emerald-100" : "border-amber-700/60 bg-amber-950/30 text-amber-100"}`}>
+              {newsModeLabel(snapshot.newsProviderStatus.mode, snapshot.newsProviderStatus.isLive)}
+            </span>
+            <span>{snapshot.newsProviderStatus.headlineCount} headlines · {ageMinutes(snapshot.newsProviderStatus.lastFetchAt)} gammal</span>
+            {!snapshot.newsProviderStatus.isConfigured ? <span className="text-amber-200">News provider not configured</span> : null}
+            {snapshot.newsProviderStatus.error ? <span className="text-rose-300">Fel: {snapshot.newsProviderStatus.error}</span> : null}
+          </div>
           {snapshot.newsTriggers.length > 0 ? (
             <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-5">
-              {snapshot.newsTriggers.slice(0, 5).map((item) => (
+              {snapshot.newsTriggers.slice(0, 5).map((item) => item.ticker ? (
                 <button
                   key={`news-trigger-${item.id}`}
                   type="button"
                   onClick={() => setSelectedCase(candidateFromNewsTrigger(snapshot, item))}
-                  className="rounded border border-zinc-800 bg-zinc-950/70 p-3 text-left text-sm transition hover:border-violet-700 hover:bg-zinc-900/80"
+                  className="cursor-pointer rounded border border-zinc-800 bg-zinc-950/70 p-3 text-left text-sm transition hover:border-violet-700 hover:bg-zinc-900/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500"
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div>
@@ -840,9 +1088,21 @@ export function TerminalV2Shell() {
                   </div>
                   <p className="mt-2 line-clamp-2 text-xs leading-5 text-zinc-300">{item.headline}</p>
                   <p className="mt-2 text-[11px] text-zinc-500">
-                    styrka {item.triggerStrength}/100 · repricing {item.repricingPotential}/100
+                    {item.source} · {ageMinutes(item.publishedAt)} · styrka {item.triggerStrength}/100 · repricing {item.repricingPotential}/100
                   </p>
                 </button>
+              ) : (
+                <div key={`news-trigger-${item.id}`} className="rounded border border-zinc-800 bg-zinc-950/70 p-3 text-sm">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <div className="font-semibold text-zinc-500">NO TICKER</div>
+                      <div className="text-[11px] text-zinc-600">{item.company ?? item.source}</div>
+                    </div>
+                    <span className="rounded border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[10px] text-zinc-400">{item.triggerType}</span>
+                  </div>
+                  <p className="mt-2 line-clamp-2 text-xs leading-5 text-zinc-400">{item.headline}</p>
+                  <p className="mt-2 text-[11px] text-zinc-600">{item.source} · {ageMinutes(item.publishedAt)}</p>
+                </div>
               ))}
             </div>
           ) : (
@@ -871,7 +1131,7 @@ export function TerminalV2Shell() {
                     key={`memory-${item.ticker}-${item.priorityState}`}
                     type="button"
                     onClick={() => setSelectedCase(candidateFromPriority(snapshot, item))}
-                    className="w-full rounded border border-zinc-800 bg-zinc-950/60 p-3 text-left text-sm transition hover:border-cyan-800"
+                    className="w-full cursor-pointer rounded border border-zinc-800 bg-zinc-950/60 p-3 text-left text-sm transition hover:border-cyan-800 hover:bg-zinc-900/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-500"
                   >
                     <div className="flex items-center justify-between gap-2">
                       <span className="font-semibold text-zinc-100">{item.ticker}</span>
@@ -931,7 +1191,12 @@ export function TerminalV2Shell() {
           {snapshot.trackedUniverse.length > 0 ? (
             <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-5">
               {snapshot.trackedUniverse.slice(0, 15).map((item) => (
-                <div key={`tracked-${item.ticker}`} className="rounded border border-zinc-800 bg-zinc-950/60 p-3 text-sm">
+                <button
+                  key={`tracked-${item.ticker}`}
+                  type="button"
+                  onClick={() => setSelectedCase(candidateFromTracked(snapshot, item))}
+                  className="cursor-pointer rounded border border-zinc-800 bg-zinc-950/60 p-3 text-left text-sm transition hover:border-cyan-800 hover:bg-zinc-900/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-500"
+                >
                   <div className="flex items-start justify-between gap-2">
                     <div>
                       <div className="font-semibold text-zinc-100">{item.ticker}</div>
@@ -945,7 +1210,7 @@ export function TerminalV2Shell() {
                   ) : (
                     <p className="mt-2 text-[11px] text-zinc-600">Ingen färsk livebekräftelse</p>
                   )}
-                </div>
+                </button>
               ))}
             </div>
           ) : (
@@ -957,7 +1222,12 @@ export function TerminalV2Shell() {
           {snapshot.positionManagement.length > 0 ? (
             <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
               {snapshot.positionManagement.slice(0, 12).map((item) => (
-                <div key={`position-${item.ticker}`} className="rounded border border-zinc-800 bg-zinc-950/60 p-3 text-sm">
+                <button
+                  key={`position-${item.ticker}`}
+                  type="button"
+                  onClick={() => setSelectedCase(candidateFromPosition(snapshot, item))}
+                  className="cursor-pointer rounded border border-zinc-800 bg-zinc-950/60 p-3 text-left text-sm transition hover:border-cyan-800 hover:bg-zinc-900/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-500"
+                >
                   <div className="flex items-start justify-between gap-2">
                     <div>
                       <div className="font-semibold text-zinc-100">{item.ticker}</div>
@@ -972,7 +1242,7 @@ export function TerminalV2Shell() {
                   </p>
                   <p className="mt-1 text-[11px] text-zinc-600">Nästa: {item.suggestedAction ?? "wait"} · {item.sourceStatus ?? item.source}</p>
                   <p className="mt-1 line-clamp-2 text-[11px] text-zinc-600">Ändrat: {item.whatChanged}</p>
-                </div>
+                </button>
               ))}
             </div>
           ) : (

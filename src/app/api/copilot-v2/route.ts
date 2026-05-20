@@ -61,6 +61,15 @@ interface CanonicalTradingSnapshot {
   marketQuality: {
     label: string;
   };
+  newsProviderStatus?: {
+    providerName: string;
+    mode: "mock" | "manual" | "rss" | "api" | "disabled";
+    isLive: boolean;
+    isConfigured: boolean;
+    lastFetchAt: string;
+    error: string | null;
+    headlineCount: number;
+  };
   candidates: TradingCandidate[];
   topFocus: TradingCandidate[];
   portfolioDecisions?: Array<{ ticker: string; decision: string; reason: string; risk?: string }>;
@@ -76,6 +85,7 @@ interface CanonicalTradingSnapshot {
   positionManagement?: PositionManagementDecision[];
   priorityBoard?: PriorityItem[];
   newsTriggers?: NewsTrigger[];
+  earlyRadar?: EarlyRadarItem[];
   breadth?: {
     hot?: TradingCandidate[];
     watch?: TradingCandidate[];
@@ -153,6 +163,24 @@ interface NewsTrigger {
   secondDerivativeScore: number;
   repricingPotential: number;
   summary: string;
+}
+
+interface EarlyRadarItem {
+  ticker: string;
+  company?: string | null;
+  rank: number;
+  radarReason: string;
+  preOpenTrigger: string;
+  narrativeTriggerType: string;
+  triggerStrength: number;
+  marketCapSensitivity: number;
+  secondDerivativeScore: number;
+  watchBeforeOpen: boolean;
+  confirmationNeeded: string;
+  invalidation: string;
+  priorityScore: number;
+  source: string;
+  status: string;
 }
 
 const COPILOT_V2_MODEL = process.env.OPENAI_MODEL ?? "gpt-4.1-mini";
@@ -464,6 +492,7 @@ function compactSnapshot(snapshot: CanonicalTradingSnapshot) {
     marketSessionPhase: snapshot.marketSessionPhase,
     providerStatus: snapshot.providerStatus,
     marketQuality: snapshot.marketQuality,
+    newsProviderStatus: snapshot.newsProviderStatus,
     marketPulse: snapshot.marketPulse,
     catalystPulse: snapshot.catalystPulse,
     warnings: snapshot.warnings?.slice(0, 5) ?? [],
@@ -480,6 +509,7 @@ function compactSnapshot(snapshot: CanonicalTradingSnapshot) {
     positionManagement: snapshot.positionManagement?.slice(0, 18) ?? [],
     priorityBoard: snapshot.priorityBoard?.slice(0, 12) ?? [],
     newsTriggers: snapshot.newsTriggers?.slice(0, 10) ?? [],
+    earlyRadar: snapshot.earlyRadar?.slice(0, 10) ?? [],
     trackedUniverse: (snapshot.trackedUniverse ?? []).slice(0, 40).map((item) => ({
       ticker: item.ticker,
       company: item.company,
@@ -511,6 +541,7 @@ function buildSystemPrompt() {
     "Old RVOL eller gammal squeeze får inte bära action. Om signalQuality är STALLED/EXHAUSTED/DEAD ska svaret nedgraderas tydligt.",
     "Vid frågor som varför går den, vad är storyn, är detta bara squeeze: börja med narrativeTriggerType, narrativeStrength, repricingProbability och hasFreshFundamentalCatalyst före RVOL/momentum.",
     "Om newsTriggers finns för tickern eller frågan gäller dagens triggers/PM/rubriker: använd newsTriggers först, sedan price/volume.",
+    "Om newsProviderStatus.isLive är false måste du tydligt säga att nyhetsdatan är mock/manual/disabled och inte riktig live news coverage ännu. Om isLive är true får du säga baserat på live RSS/API-feed.",
     "Om ticker finns i trackedUniverse men inte i aktiva candidates: säg att den är tracked men inte aktiv toppkandidat just nu. Säg aldrig 'no data' för tracked tickers.",
     "Tracked tickers kan sakna färsk livebekräftelse. Då är beslutet bevaka/re-check, inte att caset är okänt.",
     "Vid breda frågor som vad ska jag fokusera på, vad spelar roll nu, vad ignorerar jag eller vad har dött: prioritera priorityBoard framför långa kandidatlistor.",
@@ -681,11 +712,28 @@ function focusAnswer(snapshot: CanonicalTradingSnapshot) {
 
 function priorityQuestionAnswer(message: string, snapshot: CanonicalTradingSnapshot) {
   const lower = message.toLowerCase();
+  if (/före öppning|fore oppning|pre.?open|imorgon bitti|radarn|radar|innan öppning|innan oppning/.test(lower)) {
+    const radar = (snapshot.earlyRadar ?? []).slice(0, 5);
+    if (radar.length > 0) {
+      return [
+        "Beslut: använd Early Radar före öppning, inte gårdagens movers.",
+        ...radar.map((item) => `${item.rank}. ${item.ticker}: ${item.status} - ${item.preOpenTrigger}. Bekräftelse: ${item.confirmationNeeded}`),
+        snapshot.newsProviderStatus?.isLive ? "News: live RSS/API-feed i snapshoten." : "News: mock/manual eller disabled, inte live coverage.",
+      ].join("\n");
+    }
+  }
   if (/trigger|pm|rubrik|headline|nyhet|nyheter/.test(lower)) {
     const triggers = (snapshot.newsTriggers ?? []).slice(0, 5);
     if (triggers.length > 0) {
       return [
         `Beslut: viktigaste triggers först, inte momentum först.`,
+        snapshot.newsProviderStatus?.isLive
+          ? "News: baserat på live RSS/API-feed i snapshoten."
+          : snapshot.newsProviderStatus?.mode === "mock"
+          ? "Obs: news provider är MOCK/MANUAL, inte live Avanza/Finwire/MFN/Cision ännu."
+          : snapshot.newsProviderStatus?.mode === "manual"
+            ? "Obs: news provider är MANUAL env input, inte automatiserad livefeed."
+            : "News provider saknar live/headline-data.",
         ...triggers.map((item) => `${item.ticker ?? "NO TICKER"}: ${item.triggerType}/${item.narrativeTriggerType} (${item.triggerStrength}/100). ${item.summary}`),
         "Nästa steg: kräv live reaction innan det blir action-case.",
       ].join("\n");

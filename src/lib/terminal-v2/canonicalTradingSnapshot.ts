@@ -1,7 +1,8 @@
 import type { AutonomousDiscoveryCandidate, AutonomousDiscoveryResult, DiscoveryBucket } from "@/lib/intelligence/autonomousDiscovery";
 import { runAutonomousDiscoveryScan } from "@/lib/intelligence/autonomousDiscovery";
 import { getLatestCaseStateSnapshots, getLatestRunChanges, type RankingChange, type RunnerCaseSnapshot } from "@/lib/db/runnerRepository";
-import { parseNewsTriggers, type NewsTrigger, type RawHeadlineInput } from "@/lib/newsTriggerParsing";
+import { fetchLatestNewsHeadlinesWithFallback } from "@/lib/newsIngestion";
+import { parseNewsTriggers, type NewsTrigger } from "@/lib/newsTriggerParsing";
 import { yahooLiveMarketReactionProvider } from "@/lib/providers/liveMarketReactionProvider";
 
 export type TradingAction = "Agera" | "Bevaka" | "Het men jaga inte" | "Hog risk" | "Undvik";
@@ -157,6 +158,24 @@ export interface PriorityItem {
   expiresSoon: boolean;
 }
 
+export interface EarlyRadarItem {
+  ticker: string;
+  company?: string | null;
+  rank: number;
+  radarReason: string;
+  preOpenTrigger: string;
+  narrativeTriggerType: NarrativeTriggerType;
+  triggerStrength: number;
+  marketCapSensitivity: number;
+  secondDerivativeScore: number;
+  watchBeforeOpen: boolean;
+  confirmationNeeded: string;
+  invalidation: string;
+  priorityScore: number;
+  source: "newsTrigger" | "trackedMemory" | "candidate" | "hybrid";
+  status: "PREOPEN_WATCH" | "OPEN_CONFIRMATION_NEEDED" | "ACTIVE_CONFIRMED" | "REJECTED";
+}
+
 export interface ProviderStatus {
   name: string;
   status: "live" | "partial" | "degraded" | "offline";
@@ -189,6 +208,15 @@ export interface CanonicalTradingSnapshot {
   topFocus: TradingCandidate[];
   warnings: string[];
   marketQuality: MarketQuality;
+  newsProviderStatus: {
+    providerName: string;
+    mode: "mock" | "manual" | "rss" | "api" | "disabled";
+    isLive: boolean;
+    isConfigured: boolean;
+    lastFetchAt: string;
+    error: string | null;
+    headlineCount: number;
+  };
   whatChanged: Array<RankingChange & { createdAt?: string }>;
   marketPulse: {
     label: "market aggressive" | "mixed" | "defensive" | "thin liquidity" | "crowded momentum" | "stealth rotation";
@@ -204,6 +232,7 @@ export interface CanonicalTradingSnapshot {
   positionManagement: PositionManagementDecision[];
   priorityBoard: PriorityItem[];
   newsTriggers: NewsTrigger[];
+  earlyRadar: EarlyRadarItem[];
   breadth: {
     hot: TradingCandidate[];
     watch: TradingCandidate[];
@@ -378,26 +407,6 @@ function assessSignalQuality(input: {
 
 function coveragePercent(result: AutonomousDiscoveryResult) {
   return result.scannedCount > 0 ? Math.round((result.liveHits / result.scannedCount) * 100) : 0;
-}
-
-function loadManualHeadlineInputs(): Array<string | RawHeadlineInput> {
-  const raw = process.env.RAKETRADAR_NEWS_HEADLINES ?? process.env.NEWS_TRIGGER_HEADLINES;
-  if (!raw?.trim()) return [];
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (Array.isArray(parsed)) {
-      return parsed.filter((item): item is string | RawHeadlineInput =>
-        typeof item === "string" ||
-        (typeof item === "object" && item !== null && typeof (item as { headline?: unknown }).headline === "string")
-      );
-    }
-  } catch {
-    // Fall through to line-separated parsing.
-  }
-  return raw
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
 }
 
 function marketQuality(result: AutonomousDiscoveryResult): MarketQuality["label"] {
@@ -1334,6 +1343,111 @@ function buildPriorityBoard(input: {
     .slice(0, 18);
 }
 
+function buildEarlyRadar(input: {
+  newsTriggers: NewsTrigger[];
+  candidates: TradingCandidate[];
+  trackedUniverse: TrackedTicker[];
+  snapshotFreshness: ReturnType<typeof buildSnapshotFreshness>;
+  newsIsLive: boolean;
+}): EarlyRadarItem[] {
+  const candidateByTicker = new Map(input.candidates.map((item) => [item.ticker.toUpperCase(), item]));
+  const items = new Map<string, EarlyRadarItem>();
+  for (const trigger of input.newsTriggers) {
+    if (!trigger.ticker || trigger.narrativeTriggerType === "UNKNOWN" || trigger.triggerType === "MACRO_NOISE") continue;
+    const ticker = trigger.ticker.toUpperCase();
+    const candidate = candidateByTicker.get(ticker);
+    const isFreshTrigger = trigger.isFreshToday;
+    const priorityScore = Math.max(0, Math.min(100, Math.round(
+      trigger.triggerStrength * 0.34 +
+        trigger.repricingPotential * 0.32 +
+        trigger.marketCapSensitivity * 0.18 +
+        trigger.secondDerivativeScore * 0.12 +
+        (candidate?.isActiveToday ? 8 : 0) -
+        (!isFreshTrigger ? 30 : 0) -
+        (!input.newsIsLive ? 8 : 0),
+    )));
+    items.set(ticker, {
+      ticker,
+      company: trigger.company,
+      rank: 0,
+      radarReason: trigger.summary,
+      preOpenTrigger: trigger.headline,
+      narrativeTriggerType: trigger.narrativeTriggerType as NarrativeTriggerType,
+      triggerStrength: trigger.triggerStrength,
+      marketCapSensitivity: trigger.marketCapSensitivity,
+      secondDerivativeScore: trigger.secondDerivativeScore,
+      watchBeforeOpen: isFreshTrigger && priorityScore >= 55,
+      confirmationNeeded: candidate?.isActiveToday
+        ? "bekräfta att live move håller första pullbacken"
+        : "öppningsvolym, spreadkontroll och första higher low",
+      invalidation: "ingen öppningsvolym eller headline får ingen prisreaktion",
+      priorityScore,
+      source: candidate ? "hybrid" : "newsTrigger",
+      status: candidate?.isActiveToday
+        ? "ACTIVE_CONFIRMED"
+        : isFreshTrigger
+          ? "PREOPEN_WATCH"
+          : "OPEN_CONFIRMATION_NEEDED",
+    });
+  }
+  for (const candidate of input.candidates) {
+    if (!candidate.isActiveToday && candidate.freshnessStatus !== "premarketContext") continue;
+    if (candidate.narrativeTriggerType === "UNKNOWN" || candidate.narrativeStrength < 58) continue;
+    const existing = items.get(candidate.ticker);
+    const priorityScore = Math.max(existing?.priorityScore ?? 0, Math.round(
+      candidate.narrativeStrength * 0.36 +
+        candidate.repricingProbability * 0.28 +
+        candidate.thematicTailwind * 0.16 +
+        candidate.marketAttentionShift * 0.12 -
+        candidate.decayScore * 0.2,
+    ));
+    items.set(candidate.ticker, {
+      ticker: candidate.ticker,
+      company: candidate.company,
+      rank: 0,
+      radarReason: candidate.whyNow,
+      preOpenTrigger: candidate.catalystSummary,
+      narrativeTriggerType: candidate.narrativeTriggerType,
+      triggerStrength: Math.max(candidate.catalystScore, candidate.narrativeStrength),
+      marketCapSensitivity: 55,
+      secondDerivativeScore: candidate.thematicTailwind,
+      watchBeforeOpen: input.snapshotFreshness.marketSessionPhase === "preopen" || candidate.freshnessStatus === "premarketContext",
+      confirmationNeeded: candidate.needsNow,
+      invalidation: candidate.invalidation,
+      priorityScore,
+      source: existing ? "hybrid" : "candidate",
+      status: candidate.isActiveToday ? "ACTIVE_CONFIRMED" : "OPEN_CONFIRMATION_NEEDED",
+    });
+  }
+  for (const tracked of input.trackedUniverse) {
+    if (items.has(tracked.ticker) || tracked.status === "activeCandidate") continue;
+    const hasFreshTrigger = input.newsTriggers.some((trigger) => trigger.ticker?.toUpperCase() === tracked.ticker && trigger.isFreshToday);
+    if (!hasFreshTrigger) continue;
+    items.set(tracked.ticker, {
+      ticker: tracked.ticker,
+      company: tracked.company,
+      rank: 0,
+      radarReason: tracked.summary,
+      preOpenTrigger: "fresh trigger i newsTriggers",
+      narrativeTriggerType: "UNKNOWN",
+      triggerStrength: 45,
+      marketCapSensitivity: 50,
+      secondDerivativeScore: 20,
+      watchBeforeOpen: true,
+      confirmationNeeded: "måste dyka upp i live scan vid öppning",
+      invalidation: "ingen live reaction vid öppning",
+      priorityScore: 48,
+      source: "trackedMemory",
+      status: "OPEN_CONFIRMATION_NEEDED",
+    });
+  }
+  return [...items.values()]
+    .filter((item) => item.status !== "REJECTED" && item.priorityScore >= 40)
+    .sort((a, b) => b.priorityScore - a.priorityScore || b.triggerStrength - a.triggerStrength)
+    .slice(0, 10)
+    .map((item, index) => ({ ...item, rank: index + 1 }));
+}
+
 function buildMarketPulse(candidates: TradingCandidate[], quality: MarketQuality): CanonicalTradingSnapshot["marketPulse"] {
   const hot = candidates.filter((candidate) => candidate.sourceBucket === "HOT").length;
   const stealth = candidates.filter((candidate) => candidate.sourceBucket === "STEALTH").length;
@@ -1407,17 +1521,28 @@ function buildCatalystPulse(candidates: TradingCandidate[]): CanonicalTradingSna
 }
 
 export async function buildCanonicalTradingSnapshot(): Promise<CanonicalTradingSnapshot> {
-  const [discovery, changesResult] = await Promise.all([
+  const [discovery, changesResult, newsIngestion] = await Promise.all([
     withTimeout(runAutonomousDiscoveryScan({ provider: yahooLiveMarketReactionProvider }), SNAPSHOT_SCAN_TIMEOUT_MS),
     getLatestRunChanges().catch(() => null),
+    fetchLatestNewsHeadlinesWithFallback().catch(() => ({
+      providerName: "news ingestion failed",
+      mode: "disabled" as const,
+      isLive: false,
+      isConfigured: false,
+      lastFetchAt: new Date().toISOString(),
+      error: "news ingestion failed",
+      headlineCount: 0,
+      generatedAt: new Date().toISOString(),
+      headlines: [],
+    })),
   ]);
   const now = new Date();
   const dataTimestamp = discovery?.generatedAt ? new Date(discovery.generatedAt) : null;
   const snapshotFreshness = buildSnapshotFreshness(now, dataTimestamp);
-  const newsTriggers = parseNewsTriggers(loadManualHeadlineInputs()).slice(0, 25);
+  const newsTriggers = parseNewsTriggers(newsIngestion.headlines).slice(0, 25);
   const newsByTicker = new Map(
     newsTriggers
-      .filter((trigger) => trigger.ticker)
+      .filter((trigger) => newsIngestion.isLive && trigger.isFreshToday && trigger.ticker)
       .map((trigger) => [trigger.ticker!.toUpperCase(), trigger]),
   );
   const changeByTicker = new Map<string, string>();
@@ -1496,6 +1621,13 @@ export async function buildCanonicalTradingSnapshot(): Promise<CanonicalTradingS
     positionManagement,
     changes: changesResult?.changes ?? [],
   });
+  const earlyRadar = buildEarlyRadar({
+    newsTriggers,
+    candidates,
+    trackedUniverse,
+    snapshotFreshness,
+    newsIsLive: newsIngestion.isLive,
+  });
 
   return {
     timestamp: snapshotFreshness.generatedAt,
@@ -1520,8 +1652,20 @@ export async function buildCanonicalTradingSnapshot(): Promise<CanonicalTradingS
     warnings: [
       ...(discovery ? buildWarnings(discovery) : ["Live scan timeout. Visar endast senaste persistade discovery-case utan mockdata."]),
       ...buildFreshnessWarnings(snapshotFreshness),
+      ...(!newsIngestion.isLive ? ["News Trigger Inbox använder MOCK/MANUAL eller disabled fallback, inte live Avanza/Finwire/MFN/Cision."] : []),
+      ...(!newsIngestion.isConfigured ? ["News provider not configured: lägg NEWS_RSS_FEEDS för riktig RSS live-ingestion."] : []),
+      ...(newsIngestion.error ? [`News provider issue: ${newsIngestion.error}`] : []),
     ],
     marketQuality: computedMarketQuality,
+    newsProviderStatus: {
+      providerName: newsIngestion.providerName,
+      mode: newsIngestion.mode,
+      isLive: newsIngestion.isLive,
+      isConfigured: newsIngestion.isConfigured,
+      lastFetchAt: newsIngestion.lastFetchAt,
+      error: newsIngestion.error,
+      headlineCount: newsIngestion.headlineCount,
+    },
     whatChanged: (changesResult?.changes ?? []).slice(0, 8),
     marketPulse: buildMarketPulse(candidates, computedMarketQuality),
     catalystPulse: buildCatalystPulse(candidates),
@@ -1529,6 +1673,7 @@ export async function buildCanonicalTradingSnapshot(): Promise<CanonicalTradingS
     positionManagement,
     priorityBoard,
     newsTriggers,
+    earlyRadar,
     breadth,
   };
 }
