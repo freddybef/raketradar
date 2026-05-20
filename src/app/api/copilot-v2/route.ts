@@ -93,6 +93,7 @@ interface CanonicalTradingSnapshot {
   };
   whatChanged?: Array<{ ticker: string; changeType: string; reason: string }>;
   trackedUniverse?: TrackedTicker[];
+  liveCoverageAudit?: unknown[];
   positionManagement?: PositionManagementDecision[];
   priorityBoard?: PriorityItem[];
   newsTriggers?: NewsTrigger[];
@@ -116,6 +117,27 @@ interface TrackedTicker {
   lastKnownScore?: number | null;
   lastKnownConfidence?: number | null;
   candidate?: TradingCandidate;
+  liveDataStatus?: "fresh" | "partial" | "missing" | "memory_only";
+  liveDataMissingReason?: string | null;
+  attemptedSymbols?: string[];
+  workingAlias?: string | null;
+  livePrice?: number | null;
+  liveVolume?: number | null;
+  liveRvol?: number | null;
+  liveAsOf?: string | null;
+  providerAttempts?: Array<{
+    symbol: string;
+    range: "1d" | "1mo";
+    interval: "5m" | "1d";
+    statusCode: number | null;
+    error: string | null;
+    hasQuote: boolean;
+    hasVolume: boolean;
+    bars: number;
+  }>;
+  quoteStatus?: "present" | "missing";
+  volumeStatus?: "present" | "missing";
+  rvolStatus?: "available" | "missing_daily_baseline" | "missing_volume" | "missing_quote";
 }
 
 interface PositionManagementDecision {
@@ -232,11 +254,24 @@ function normalizeEntity(value: string) {
     .trim();
 }
 
+const TRADING_ALIASES: Record<string, string[]> = {
+  "AAC": ["aac", "accon", "aac clyde", "aac clyde space", "åac"],
+  "EPIS B": ["epis", "episurf", "episurf medical"],
+  "GOMX": ["gomx", "gomspace", "gom space", "gomspace group"],
+  "KVIX": ["kvix", "kvix ab"],
+  "MILDEF": ["mildef", "mildef group", "mil def"],
+  "NEXAM": ["nexam", "nexam chemical", "nexam chemical holding"],
+  "SBB B": ["sbb", "sbbb", "samhallsbyggnadsbolaget", "samhällsbyggnadsbolaget"],
+  "SHT": ["sht", "sht b", "smart high tech", "smart high-tech"],
+  "SIVE": ["sive", "sivers", "sievers", "sivers semi", "sivers semiconductors", "sievers semiconductors"],
+  "YUBICO": ["yubico", "yubi", "yubico ab"],
+};
+
 function aliasesFor(candidate: TradingCandidate) {
   const ticker = normalizeEntity(candidate.ticker);
   const compactTicker = ticker.replace(/\s+/g, "");
   const company = normalizeEntity(candidate.company ?? "");
-  const aliases = new Set([ticker, compactTicker, company]);
+  const aliases = new Set([ticker, compactTicker, company, ...(TRADING_ALIASES[candidate.ticker] ?? [])]);
   if (candidate.ticker === "EPIS B" || /episurf/.test(company)) {
     aliases.add("episurf");
     aliases.add("epis");
@@ -249,7 +284,7 @@ function aliasesFor(candidate: TradingCandidate) {
   }
   if (candidate.ticker === "NEXAM" || /nexam/.test(company)) aliases.add("nexam");
   if (candidate.ticker === "SHT" || /sht/.test(company)) aliases.add("sht");
-  return [...aliases].filter(Boolean);
+  return [...aliases].map(normalizeEntity).filter(Boolean);
 }
 
 function aliasesForTracked(item: TrackedTicker) {
@@ -342,14 +377,32 @@ function mentionedTrackedItems(message: string, snapshot: CanonicalTradingSnapsh
 
 function trackedAnswer(item: TrackedTicker) {
   if (item.candidate) return candidateAnswer(item.candidate, true);
+  const attemptLine = (item.providerAttempts ?? [])
+    .slice(0, 8)
+    .map((attempt) => `${attempt.symbol} ${attempt.range}/${attempt.interval}: ${attempt.statusCode ?? "-"} ${attempt.error ?? "ok"} quote=${attempt.hasQuote ? "ja" : "nej"} volym=${attempt.hasVolume ? "ja" : "nej"} bars=${attempt.bars}`)
+    .join("; ");
+  const availabilityLine = `Quote: ${item.quoteStatus ?? "okänd"}. Volym: ${item.volumeStatus ?? "okänd"}. RVOL: ${item.rvolStatus ?? "okänd"}.`;
+  const liveLine =
+    item.liveDataStatus === "fresh"
+      ? `Live data: färsk quote/volym/RVOL finns${item.workingAlias ? ` via ${item.workingAlias}` : ""}. Pris ${item.livePrice ?? "okänt"}, volym ${item.liveVolume ?? "okänd"}, RVOL ${item.liveRvol ?? "okänd"}${item.liveAsOf ? `, asOf ${item.liveAsOf}` : ""}. Ingen aktiv top setup om den inte finns i Live Edge Board.`
+      : item.liveDataStatus === "missing"
+      ? `Live data: saknas. Orsak: ${item.liveDataMissingReason ?? "okänd provider-orsak"}. Försökta symboler: ${(item.attemptedSymbols ?? []).slice(0, 6).join(", ") || "inga"}.`
+      : item.liveDataStatus === "memory_only"
+        ? `Live data: memory-only just nu. ${item.liveDataMissingReason ?? "Ingen färsk providerträff i senaste scan."}`
+        : item.liveDataStatus === "partial"
+          ? `Live data: partial. ${item.liveDataMissingReason ?? "Saknar full same-day bekräftelse."}`
+          : "Live data: ingen explicit live-status i snapshoten.";
   const statusText = item.status === "recentlyActive"
     ? "nyligen aktiv men inte aktiv toppkandidat just nu"
     : item.status === "trackedButNotActive"
       ? "tracked men inte aktiv toppkandidat just nu"
       : item.status;
   return [
-    `Beslut: ${item.ticker} är ${statusText}.`,
+    `Beslut: ${item.ticker} är ${item.liveDataStatus === "fresh" && !item.candidate ? "inte aktiv setup just nu, men har färsk live-data" : statusText}.`,
     `Varför: ${item.summary}`,
+    liveLine,
+    availabilityLine,
+    attemptLine ? `Providerförsök: ${attemptLine}` : "Providerförsök: inga registrerade försök i senaste scan.",
     `Trigger: behöver färsk livebekräftelse, ny volym eller ny plats i Live Edge Board.`,
     "Risk: utan färsk bekräftelse är det bevakning, inte agera.",
     `Invalidation: fortsätter sakna momentum/coverage i kommande scan.`,
@@ -536,8 +589,18 @@ function compactSnapshot(snapshot: CanonicalTradingSnapshot) {
       lastKnownState: item.lastKnownState,
       lastKnownScore: item.lastKnownScore,
       lastKnownConfidence: item.lastKnownConfidence,
+      liveDataStatus: item.liveDataStatus,
+      livePrice: item.livePrice,
+      liveVolume: item.liveVolume,
+      liveRvol: item.liveRvol,
+      liveAsOf: item.liveAsOf,
+      workingAlias: item.workingAlias,
+      quoteStatus: item.quoteStatus,
+      volumeStatus: item.volumeStatus,
+      rvolStatus: item.rvolStatus,
       candidate: item.candidate ? compactCandidate(item.candidate) : undefined,
     })),
+    liveCoverageAudit: snapshot.liveCoverageAudit ?? [],
     whatChanged: snapshot.whatChanged?.slice(0, 10) ?? [],
   };
 }

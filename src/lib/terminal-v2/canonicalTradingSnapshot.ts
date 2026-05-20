@@ -1,6 +1,7 @@
 import type { AutonomousDiscoveryCandidate, AutonomousDiscoveryResult, DiscoveryBucket } from "@/lib/intelligence/autonomousDiscovery";
 import { runAutonomousDiscoveryScan } from "@/lib/intelligence/autonomousDiscovery";
 import { getLatestCaseStateSnapshots, getLatestRunChanges, type RankingChange, type RunnerCaseSnapshot } from "@/lib/db/runnerRepository";
+import { getSwedishEquityUniverse } from "@/lib/market/swedishEquityUniverse";
 import { fetchLatestNewsHeadlinesWithFallback, type FeedHealthEntry } from "@/lib/newsIngestion";
 import { parseNewsTriggers, type NewsTrigger, type TriggerVerificationState } from "@/lib/newsTriggerParsing";
 import { yahooLiveMarketReactionProvider } from "@/lib/providers/liveMarketReactionProvider";
@@ -103,6 +104,45 @@ export interface TrackedTicker {
   lastKnownScore?: number | null;
   lastKnownConfidence?: number | null;
   candidate?: TradingCandidate;
+  liveDataStatus: "fresh" | "partial" | "missing" | "memory_only";
+  liveDataMissingReason?: string | null;
+  attemptedSymbols?: string[];
+  workingAlias?: string | null;
+  livePrice?: number | null;
+  liveVolume?: number | null;
+  liveRvol?: number | null;
+  liveAsOf?: string | null;
+  providerAttempts?: Array<{
+    symbol: string;
+    range: "1d" | "1mo";
+    interval: "5m" | "1d";
+    statusCode: number | null;
+    error: string | null;
+    hasQuote: boolean;
+    hasVolume: boolean;
+    bars: number;
+  }>;
+  quoteStatus?: "present" | "missing";
+  volumeStatus?: "present" | "missing";
+  rvolStatus?: "available" | "missing_daily_baseline" | "missing_volume" | "missing_quote";
+}
+
+export interface LiveCoverageAuditItem {
+  ticker: string;
+  company?: string;
+  liveDataStatus: "fresh" | "partial" | "missing" | "memory_only" | "not_tracked";
+  providerSymbol: string | null;
+  fetchStatus: "success" | "partial" | "failed" | "not_attempted";
+  quoteStatus: "present" | "missing" | "unknown";
+  volumeStatus: "present" | "missing" | "unknown";
+  rvolStatus: "available" | "missing_daily_baseline" | "missing_volume" | "missing_quote" | "unknown";
+  price: number | null;
+  volume: number | null;
+  rvol: number | null;
+  asOf: string | null;
+  attemptedSymbols: string[];
+  lastError: string | null;
+  statusCodes: Array<number | null>;
 }
 
 export type PositionManagementState =
@@ -235,6 +275,7 @@ export interface CanonicalTradingSnapshot {
     cases: Array<{ ticker: string; catalystType: CatalystType; summary: string; score: number }>;
   };
   trackedUniverse: TrackedTicker[];
+  liveCoverageAudit: LiveCoverageAuditItem[];
   positionManagement: PositionManagementDecision[];
   priorityBoard: PriorityItem[];
   newsTriggers: NewsTrigger[];
@@ -249,7 +290,9 @@ export interface CanonicalTradingSnapshot {
 }
 
 const SNAPSHOT_SCAN_TIMEOUT_MS = 18_000;
-const DEFAULT_TRACKED_TICKERS = ["KVIX", "SHT", "NEXAM", "YUBICO", "EPIS B"];
+const DEFAULT_TRACKED_TICKERS = ["KVIX", "SHT", "NEXAM", "YUBICO", "EPIS B", "GOMX", "MILDEF", "SIVE", "AAC", "CLAV"];
+const LIVE_COVERAGE_AUDIT_TICKERS = ["SHT", "SIVE", "AAC", "KVIX", "YUBICO", "MILDEF"];
+const UNIVERSE_BY_TICKER = new Map(getSwedishEquityUniverse().map((entry) => [entry.ticker, entry]));
 
 function round(value: number, decimals = 0) {
   const factor = 10 ** decimals;
@@ -354,28 +397,35 @@ function assessSignalQuality(input: {
   const { candidate, freshness, catalystScore } = input;
   const reaction = candidate.reaction;
   const hasExpansion = reaction.intradayMomentum >= 2.5;
-  const hasFreshIgnition = reaction.intradayMomentum >= 3 && reaction.relativeVolume >= 1.4 && reaction.acceleration > 0;
-  const hasPersistentRvol = reaction.relativeVolume >= 1.5;
-  const hasContinuation = reaction.continuationProbability >= 65;
-  const hasAggression = reaction.marketAggression >= 55 || reaction.acceleration >= 1;
+  const hasPersistentRvol = reaction.relativeVolume >= 1.55;
+  const hasParticipation = hasPersistentRvol && reaction.activeTraderAttention >= 40 && reaction.marketAggression >= 45;
+  const hasFreshIgnition = reaction.intradayMomentum >= 3 && hasParticipation && reaction.acceleration > 0;
+  const hasContinuation = reaction.continuationProbability >= 65 && hasParticipation;
+  const hasAggression = hasParticipation && (reaction.marketAggression >= 55 || reaction.acceleration >= 1);
   const hasReclaim = reaction.label === "PULLBACK_VALID" || reaction.label === "REACCELERATION_WATCH";
   const hasFreshNarrative = catalystScore >= 70 && freshness.isActiveToday;
-  const confirmationCount = [hasExpansion, hasPersistentRvol, hasContinuation, hasAggression, hasReclaim, hasFreshNarrative].filter(Boolean).length;
+  const confirmationCount = [hasExpansion, hasPersistentRvol, hasParticipation, hasContinuation, hasAggression, hasReclaim, hasFreshNarrative].filter(Boolean).length;
   let decayScore = 0;
   if (!freshness.isActiveToday) decayScore += 55;
   if (freshness.dataAgeMinutes > 20) decayScore += Math.min(28, Math.floor((freshness.dataAgeMinutes - 20) / 10) * 5);
   if (reaction.fadeProbability >= 70) decayScore += 18;
   if (reaction.label === "DEAD_BOUNCE" || reaction.label === "FAILED_MOVE") decayScore += 28;
-  if (reaction.relativeVolume < 1.15) decayScore += 12;
+  if (reaction.relativeVolume < 1.15) decayScore += 28;
+  else if (reaction.relativeVolume < 1.35) decayScore += 16;
+  if (reaction.activeTraderAttention < 35 || reaction.marketAggression < 35) decayScore += 10;
   if (reaction.continuationProbability < 50) decayScore += 16;
   if (hasFreshNarrative) decayScore -= 10;
-  if (hasFreshIgnition || (hasContinuation && hasPersistentRvol)) decayScore -= 12;
+  if (hasFreshIgnition || (hasContinuation && hasParticipation)) decayScore -= 12;
   decayScore = Math.max(0, Math.min(100, Math.round(decayScore)));
   const staleReason =
     !freshness.isActiveToday
       ? `${freshness.freshnessStatus}: saknar färsk same-day livebekräftelse`
       : reaction.label === "DEAD_BOUNCE" || reaction.label === "FAILED_MOVE"
         ? "momentum/continuation har dött efter tidigare spike"
+        : reaction.relativeVolume < 1.15
+          ? "prisrörelsen saknar deltagande: RVOL är för låg för continuation-ledare"
+        : reaction.activeTraderAttention < 35 || reaction.marketAggression < 35
+          ? "svag participation/aggression bakom rörelsen"
         : reaction.fadeProbability >= 75
           ? "fade-risk dominerar färsk expansion"
           : confirmationCount < 2
@@ -390,7 +440,7 @@ function assessSignalQuality(input: {
           ? "STALLED"
           : hasFreshIgnition && confirmationCount >= 3
             ? "FRESH_IGNITION"
-            : hasContinuation && hasPersistentRvol && hasAggression
+            : hasContinuation && hasParticipation && hasAggression
               ? "ACTIVE_CONTINUATION"
               : hasReclaim
                 ? "RECLAIM_SETUP"
@@ -472,18 +522,19 @@ function riskScore(candidate: AutonomousDiscoveryCandidate) {
   return Math.max(candidate.reaction.fadeProbability, candidate.sourceWeights.fakeSpikePenalty * 2, candidate.sourceWeights.liquidityPenalty * 4);
 }
 
-function sectorText(candidate: AutonomousDiscoveryCandidate) {
-  return `${candidate.sector} ${candidate.companyName} ${candidate.ticker}`.toLowerCase();
+function entityNarrativeText(candidate: AutonomousDiscoveryCandidate) {
+  return `${candidate.ticker} ${candidate.companyName} ${candidate.sector}`.toLowerCase();
 }
 
 function classifyCatalyst(candidate: AutonomousDiscoveryCandidate): { type: CatalystType; score: number; summary: string } {
-  const text = [
-    sectorText(candidate),
+  const entityText = entityNarrativeText(candidate);
+  const flowText = [
     ...candidate.labels,
     ...candidate.whyDiscovered,
     ...candidate.reaction.flags,
     candidate.reaction.label,
   ].join(" ").toLowerCase();
+  const text = `${entityText} ${flowText}`;
   const reaction = candidate.reaction;
   if (/insider|vd-köp|ceo|management buy/.test(text)) {
     return { type: "insider_accumulation", score: 82, summary: "Insider-/ägarsignal stärker caset om priset bekräftar." };
@@ -495,7 +546,7 @@ function classifyCatalyst(candidate: AutonomousDiscoveryCandidate): { type: Cata
   if (/order|kontrakt|contract|avtal|ramavtal/.test(text)) {
     return { type: "contract_award", score: 76, summary: "Order/avtal-liknande catalyst; nästa steg kräver volymbekräftelse." };
   }
-  if (/biotech|medtech|pharma|fda|ce|studie|clinical|medicin/.test(text)) {
+  if (/biotech|medtech|pharma|fda|ce|studie|clinical|medicin/.test(entityText)) {
     const score = reaction.fadeProbability >= 60 ? 62 : 74;
     return { type: "biotech_binary", score, summary: "Binärt biotech/medtech-flöde: hög optionalitet men också hög fade-risk." };
   }
@@ -508,7 +559,7 @@ function classifyCatalyst(candidate: AutonomousDiscoveryCandidate): { type: Cata
   if (reaction.intradayMomentum >= 12 || candidate.bucket === "PARABOLIC_WATCH" || candidate.bucket === "RISK") {
     return { type: "retail_momentum", score: reaction.fadeProbability >= 65 ? 52 : 70, summary: "Retail/momentum-flöde. Viktigt case, men chase-risken styr beslutet." };
   }
-  if (/defense|försvar|cyber|ai|datacenter|uran|battery|metals/.test(text)) {
+  if (/defense|försvar|cyber|ai|datacenter|uran|battery|metals/.test(entityText)) {
     return { type: "sector_sympathy", score: 62, summary: "Sektor-/temaflöde kan ge sympathy-bud snarare än bolagsspecifik catalyst." };
   }
   if (/turnaround|restructuring|rekonstruktion|strategisk/.test(text)) {
@@ -562,7 +613,8 @@ function classifyNarrativeTrigger(
       hasFreshFundamentalCatalyst: newsTrigger.isFreshToday && newsTrigger.narrativeTriggerType !== "UNKNOWN" && newsTrigger.triggerType !== "MACRO_NOISE",
     };
   }
-  const text = narrativeText(candidate);
+  const flowText = narrativeText(candidate);
+  const entityText = entityNarrativeText(candidate);
   const reaction = candidate.reaction;
   const isSmallMid = /small|micro|nano|first north|spotlight|ngm|nordic sme/i.test(`${candidate.marketCapBucket} ${candidate.exchange}`);
   const dormantWakeup =
@@ -571,25 +623,25 @@ function classifyNarrativeTrigger(
     reaction.activeTraderAttention >= 45 &&
     reaction.fadeProbability < 72;
   const trigger: NarrativeTriggerType =
-    /rapport|earnings|q[1-4]|omsättning|vinst|ebit|guidance|omvänd vinstvarning/.test(text)
+    /rapport|earnings|q[1-4]|omsättning|vinst|ebit|guidance|omvänd vinstvarning/.test(flowText)
       ? "REPORT_REPRICING"
-      : /kommersialisering|commerciali[sz]ation|lansering|försäljning|sales ramp|produktion|scale-up|scal[e]?up|go-to-market|nanologica/.test(text)
+      : /kommersialisering|commerciali[sz]ation|lansering|försäljning|sales ramp|produktion|scale-up|scal[e]?up|go-to-market|nanologica/.test(flowText)
         ? "COMMERCIALIZATION_SHIFT"
-        : /glp|obesity|fetma|diabetes|novo|eli lilly|semaglutid|wegovy|ozempic|läkemedel/.test(text)
+        : /glp|obesity|fetma|diabetes|novo|eli lilly|semaglutid|wegovy|ozempic|läkemedel/.test(entityText)
           ? "OBESITY_ADJACENCY"
-          : /försvar|defense|nato|drön|drone|cyber|säkerhet|security/.test(text)
+          : /försvar|defense|nato|drön|drone|cyber|säkerhet|security/.test(entityText)
             ? "DEFENSE_ADJACENCY"
-            : /datacenter|data center|ai infra|server|kraft|power|cooling|semiconductor|chip/.test(text)
+            : /datacenter|data center|ai infra|server|kraft|power|cooling|semiconductor|chip/.test(entityText)
               ? "DATACENTER_INFRA"
-              : /order|kontrakt|avtal|ramavtal|contract|customer|kund/.test(text)
+              : /order|kontrakt|avtal|ramavtal|contract|customer|kund/.test(flowText)
                 ? "NEW_CONTRACT"
-                : /fda|ce|myndighet|approval|godkänn|regulator|clinical|studie|fas /.test(text)
+                : /fda|ce|myndighet|approval|godkänn|regulator|clinical|studie|fas /.test(flowText)
                   ? "REGULATORY_TRIGGER"
-                  : /lönsamhet|profitability|break-even|marginal|cash flow|kassaflöde/.test(text)
+                  : /lönsamhet|profitability|break-even|marginal|cash flow|kassaflöde/.test(flowText)
                     ? "PROFITABILITY_INFLECTION"
-                    : /finansiering|funding|emission|riktad emission|lånefacilitet|survival|överlevnad/.test(text)
+                    : /finansiering|funding|emission|riktad emission|lånefacilitet|survival|överlevnad/.test(flowText)
                       ? "FUNDING_SURVIVAL"
-                      : /ai|battery|batteri|uranium|uran|medtech|biotech|turnaround|restructuring|supply chain|logistik/.test(text)
+                      : /ai|battery|batteri|uranium|uran|medtech|biotech|turnaround|restructuring|supply chain|logistik/.test(entityText)
                         ? "SECOND_DERIVATIVE_THEME"
                         : "UNKNOWN";
   const hasFreshFundamentalCatalyst =
@@ -656,6 +708,12 @@ function catalystWeight(candidate: AutonomousDiscoveryCandidate, catalyst: { typ
   let score = catalyst.score;
   if (candidate.reaction.continuationProbability >= 70) score += 6;
   if (candidate.reaction.relativeVolume >= 2) score += 5;
+  if (
+    (candidate.bucket === "STEALTH" || candidate.reaction.label === "STEALTH_STRENGTH") &&
+    candidate.reaction.relativeVolume >= 1.45 &&
+    candidate.reaction.intradayMomentum < 4 &&
+    candidate.reaction.activeTraderAttention < 65
+  ) score += 8;
   if (candidate.reaction.fadeProbability >= 70) score -= 12;
   if (candidate.reaction.label === "DEAD_BOUNCE" || candidate.reaction.label === "FAILED_MOVE") score -= 14;
   if (candidate.bucket === "PARABOLIC_WATCH") score -= 8;
@@ -666,50 +724,52 @@ function thesisFor(candidate: AutonomousDiscoveryCandidate, setupType: string, c
   const reaction = candidate.reaction;
   const move = `${round(reaction.intradayMomentum, 2)}%`;
   const rvol = `${round(reaction.relativeVolume, 2)}x RVOL`;
-  if (catalyst.type === "earnings_breakout") return `Rapportdrivet momentum: ${move} med ${rvol} och stark continuation. Marknaden verkar prisa om snarare än bara studsa.`;
-  if (catalyst.type === "insider_accumulation") return `Insiderstöd bakom rörelsen. Caset lever om marknaden bekräftar signalen med fortsatt volym.`;
-  if (catalyst.type === "contract_award") return `Order/avtals-catalyst: rörelsen är relevant om köpare fortsätter betala upp efter första nyhetsvågen.`;
-  if (catalyst.type === "biotech_binary") return `Biotech/medtech-binäritet: hög optionalitet och hög risk. Behandla som momentum med hård invalidation.`;
-  if (catalyst.type === "short_squeeze") return `Squeeze-liknande momentum: ${move} med ${rvol}. Intressant om pressen håller efter första pullback.`;
-  if (catalyst.type === "retail_momentum") return `Retail/momentum-flöde: marknaden jagar redan caset. Viktigt att bevaka, men edge sitter i re-entry och disciplin.`;
-  if (catalyst.type === "sector_sympathy") return `Sympathy/tema-flöde: caset rör sig med sektorintresse snarare än en helt verifierad egen catalyst.`;
-  if (catalyst.type === "turnaround") return `Turnaround-liknande rörelse: marknaden börjar möjligen omvärdera risk, men behöver fortsatt bekräftelse.`;
+  if (reaction.relativeVolume < 1.15 && reaction.intradayMomentum >= 3) return `Move utan brett deltagande: ${move}, ${rvol}. Vänta volym/aggression.`;
+  if (catalyst.type === "earnings_breakout") return `Rapport/repricing: ${move}, ${rvol}. Kräver fortsatt participation.`;
+  if (catalyst.type === "insider_accumulation") return `Insiderstöd + live test. Behöver volymbekräftelse.`;
+  if (catalyst.type === "contract_award") return `Order/avtal: bevaka om köpare betalar upp efter första vågen.`;
+  if (catalyst.type === "biotech_binary") return `Binärt case: optionalitet hög, fade-risk styr.`;
+  if (catalyst.type === "short_squeeze") return `Squeezeprofil: ${move}, ${rvol}. Nästa volymvåg avgör.`;
+  if (catalyst.type === "retail_momentum") return `Crowded momentum. Re-entry före chase.`;
+  if (catalyst.type === "sector_sympathy") return `Sympathy flow. Kräver egen volymstruktur.`;
+  if (catalyst.type === "turnaround") return `Turnaround watch. Repricing kräver fortsatt struktur.`;
   if (setupType === "Early momentum") {
-    return `Tidigt momentum: ${move} med ${rvol}. Intressant för aktiv bevakning om volymen fortsätter och första pullbacken köps.`;
+    return `Early expansion: ${move}, ${rvol}. Bevaka första köpta pullback.`;
   }
   if (setupType === "Continuation") {
-    return `Continuation-ledare: köpare håller trycket efter expansion. Edge finns så länge rörelsen inte tappar tempo.`;
+    return `Continuation: ${move}, ${rvol}. Måste hålla participation.`;
   }
   if (setupType === "Stealth accumulation") {
-    return `Stealth: volymen sticker ut innan priset har sprungit färdigt. Värt att bevaka för första tydliga expansionen.`;
+    return `Stealth: RVOL före större prisexpansion. Tidig expansion-watch.`;
   }
   if (setupType === "Parabolic re-entry") {
-    return `Het men farlig: stark rörelse med chase-risk. Inte köp i fart, men viktig för pullback/re-entry om strukturen håller.`;
+    return `Het/no chase. Endast pullback/re-entry om strukturen håller.`;
   }
   if (setupType === "Squeeze candidate") {
-    return `Squeeze-profil: pris, volym och trader-intresse rör sig samtidigt. Nästa volymvåg avgör om caset lever vidare.`;
+    return `Squeeze: pris + RVOL + attention. Vänta nästa våg.`;
   }
   if (setupType === "Pullback valid") {
-    return `Konstruktiv pullback: momentum har inte dött, men caset kräver reclaim och ny volym innan det blir renare.`;
+    return `Pullback valid. Reclaim + ny volym krävs.`;
   }
   if (setupType === "Reacceleration") {
-    return `Reacceleration: caset försöker vakna igen efter paus. Fokus är om köparna orkar trycka igenom nästa nivå.`;
+    return `Reacceleration efter paus. Nästa nivå avgör.`;
   }
   if (setupType === "Retail chase risk") {
-    return `Crowded rörelse: data visar aktivitet men kvaliteten är osäker. Bara relevant om fake-spike-risken faller.`;
+    return `Crowded/oklar kvalitet. Kräver lägre fake-spike-risk.`;
   }
-  return `${setupType}: ${move} med ${rvol} och ${reaction.continuationProbability}% continuation.`;
+  return `${setupType}: ${move}, ${rvol}, continuation ${reaction.continuationProbability}%.`;
 }
 
 function whyNowFor(candidate: AutonomousDiscoveryCandidate, setupType: string, catalyst: { type: CatalystType; score: number; summary: string }) {
   const reaction = candidate.reaction;
   if (catalyst.type !== "unknown") return catalyst.summary;
-  if (setupType === "Parabolic re-entry") return "Marknaden är redan där, men rörelsen är för het för chase. Edge sitter i re-entry, inte i FOMO.";
-  if (setupType === "Stealth accumulation") return "Volymen har börjat avvika innan priset blivit uppenbart för alla. Det är exakt typen av case som kan vakna snabbt.";
-  if (reaction.marketAggression >= 65) return "Köpare attackerar aktivt just nu, med både volym och continuation bakom rörelsen.";
-  if (reaction.continuationProbability >= 75) return "Continuation-kvaliteten är starkare än den råa prisrörelsen antyder.";
-  if (reaction.relativeVolume >= 2) return "Volymen är tydligt onormal mot baseline, så caset förtjänar bevakning även utan perfekt catalyst.";
-  return "Caset är aktivt i senaste breda scan, men behöver mer bekräftelse innan det blir huvudfokus.";
+  if (reaction.relativeVolume < 1.15 && reaction.intradayMomentum >= 3) return "Move finns, men participation saknas.";
+  if (setupType === "Parabolic re-entry") return "För långt gången för chase; bara re-entry.";
+  if (setupType === "Stealth accumulation") return "RVOL vaknar före crowding/prisexpansion.";
+  if (reaction.marketAggression >= 65) return "Aggression + volym trycker samtidigt.";
+  if (reaction.continuationProbability >= 75 && reaction.relativeVolume >= 1.55) return "Struktur + participation stödjer continuation.";
+  if (reaction.relativeVolume >= 2) return "RVOL avviker tydligt; invänta struktur.";
+  return "Aktiv i scan, men behöver mer signalstyrka.";
 }
 
 function needsNowFor(candidate: AutonomousDiscoveryCandidate, setupType: string) {
@@ -725,7 +785,7 @@ function prosFor(candidate: AutonomousDiscoveryCandidate) {
   return [
     reaction.relativeVolume >= 1.5 ? `RVOL ${round(reaction.relativeVolume, 2)}` : null,
     reaction.intradayMomentum >= 2 ? `${round(reaction.intradayMomentum, 2)}% prisexpansion` : null,
-    reaction.continuationProbability >= 65 ? `${reaction.continuationProbability}% continuation` : null,
+    reaction.continuationProbability >= 65 && reaction.relativeVolume >= 1.45 ? `${reaction.continuationProbability}% continuation med deltagande` : null,
     reaction.marketAggression >= 55 ? "marknaden attackerar aktivt" : null,
     reaction.squeezeProbability >= 70 ? "squeeze-build" : null,
     candidate.bucket === "STEALTH" ? "tidig/stealth-volym" : null,
@@ -738,6 +798,7 @@ function consFor(candidate: AutonomousDiscoveryCandidate) {
   return [
     reaction.fadeProbability >= 55 ? `${reaction.fadeProbability}% fade-risk` : null,
     reaction.relativeVolume < 1.2 ? "svag RVOL-bekräftelse" : null,
+    reaction.continuationProbability >= 70 && reaction.relativeVolume < 1.35 ? "continuation saknar volymdeltagande" : null,
     candidate.liquidityBucket === "thin" ? "tunn likviditet" : null,
     candidate.whyNotRankedHigher.some((reason) => /news|catalyst/i.test(reason)) ? "saknar tydlig nyhetsbekräftelse" : null,
     candidate.suppressionReasons.length > 0 ? candidate.suppressionReasons[0] : null,
@@ -807,6 +868,27 @@ function discoveryScoreFor(input: {
       : candidate.reaction.relativeVolume < 1.2
         ? -10
         : 0;
+  const stealthRepricingBoost =
+    (candidate.bucket === "STEALTH" || candidate.reaction.label === "STEALTH_STRENGTH") &&
+    candidate.reaction.relativeVolume >= 1.45 &&
+    candidate.reaction.intradayMomentum < 4 &&
+    candidate.reaction.fadeProbability < 62 &&
+    candidate.reaction.activeTraderAttention < 68
+      ? 14
+      : 0;
+  const sympathyEarlyBoost =
+    narrative.narrativeTriggerType !== "UNKNOWN" &&
+    narrative.narrativeTriggerType !== "SECOND_DERIVATIVE_THEME" &&
+    candidate.reaction.relativeVolume >= 1.35 &&
+    candidate.reaction.intradayMomentum < 5
+      ? 7
+      : 0;
+  const weakParticipationPenalty =
+    candidate.reaction.relativeVolume < 1.15
+      ? 18
+      : candidate.reaction.relativeVolume < 1.35 || candidate.reaction.activeTraderAttention < 35
+        ? 10
+        : 0;
   const stalePenalty =
     !freshness.isActiveToday
       ? 22
@@ -823,7 +905,10 @@ function discoveryScoreFor(input: {
       candidate.autonomousDiscoveryScore * 0.18 +
       verificationBoost[triggerVerificationState] +
       (hasLiveNewsTrigger ? 10 : 0) +
-      openingAnomaly -
+      openingAnomaly +
+      stealthRepricingBoost +
+      sympathyEarlyBoost -
+      weakParticipationPenalty -
       stalePenalty,
   )));
 }
@@ -872,6 +957,12 @@ function toTradingCandidate(
         ? Math.round(narrative.narrativeStrength * 0.08)
         : 0;
   const priceOnlyPenalty = triggerVerificationState === "PRICE_ONLY" && candidate.reaction.relativeVolume < 2.4 ? 10 : 0;
+  const effectiveContinuation =
+    candidate.reaction.relativeVolume < 1.15
+      ? Math.min(candidate.reaction.continuationProbability, 45)
+      : candidate.reaction.relativeVolume < 1.35 || candidate.reaction.activeTraderAttention < 35 || candidate.reaction.marketAggression < 35
+        ? Math.min(candidate.reaction.continuationProbability, 58)
+        : candidate.reaction.continuationProbability;
   return {
     ticker: candidate.ticker,
     company: candidate.companyName,
@@ -887,7 +978,7 @@ function toTradingCandidate(
     cons: consFor(candidate),
     trigger: triggerFor(candidate, setupType),
     invalidation: invalidationFor(candidate, setupType),
-    continuation: candidate.reaction.continuationProbability,
+    continuation: effectiveContinuation,
     risk: riskScore(candidate),
     rvol: candidate.reaction.relativeVolume,
     movePct: candidate.reaction.intradayMomentum,
@@ -1075,9 +1166,81 @@ function buildTrackedUniverse(input: {
   candidates: TradingCandidate[];
   recentlyActive: TradingCandidate[];
   snapshots: RunnerCaseSnapshot[];
+  discovery?: AutonomousDiscoveryResult | null;
 }): TrackedTicker[] {
   const tracked = new Map<string, TrackedTicker>();
+  const missingByTicker = new Map((input.discovery?.missingTickers ?? []).map((item) => [item.ticker.toUpperCase(), item]));
+  const aliasByTicker = new Map((input.discovery?.aliasDebug ?? []).map((item) => [item.ticker.toUpperCase(), item]));
+  const reactionByTicker = new Map((input.discovery?.liveReactions ?? []).map((reaction) => [reaction.ticker.toUpperCase(), reaction]));
+  function liveMeta(ticker: string, candidate?: TradingCandidate) {
+    const missing = missingByTicker.get(ticker.toUpperCase());
+    const alias = aliasByTicker.get(ticker.toUpperCase());
+    const reaction = reactionByTicker.get(ticker.toUpperCase());
+    if (reaction) {
+      return {
+        liveDataStatus: "fresh" as const,
+        liveDataMissingReason: null,
+        attemptedSymbols: alias?.attemptedSymbols.map((attempt) => attempt.symbol),
+        workingAlias: alias?.workingAlias ?? null,
+        livePrice: reaction.price,
+        liveVolume: reaction.volume,
+        liveRvol: reaction.relativeVolume,
+        liveAsOf: reaction.asOf,
+        providerAttempts: alias?.attemptedSymbols,
+        quoteStatus: alias?.attemptedSymbols.some((attempt) => attempt.hasQuote) ? "present" as const : "missing" as const,
+        volumeStatus: alias?.attemptedSymbols.some((attempt) => attempt.hasVolume) ? "present" as const : "missing" as const,
+        rvolStatus: reaction.relativeVolume > 0 ? "available" as const : "missing_volume" as const,
+      };
+    }
+    if (missing) {
+      return {
+        liveDataStatus: "missing" as const,
+        liveDataMissingReason: missing.detail,
+        attemptedSymbols: missing.attemptedSymbols,
+        workingAlias: alias?.workingAlias ?? null,
+        livePrice: null,
+        liveVolume: null,
+        liveRvol: null,
+        liveAsOf: null,
+        providerAttempts: missing.providerAttempts,
+        quoteStatus: missing.quoteStatus,
+        volumeStatus: missing.volumeStatus,
+        rvolStatus: missing.rvolStatus,
+      };
+    }
+    if (candidate) {
+      return {
+        liveDataStatus: "partial" as const,
+        liveDataMissingReason: "Finns i snapshot memory/recent list men saknar färsk same-day candidate-bekräftelse.",
+        attemptedSymbols: alias?.attemptedSymbols.map((attempt) => attempt.symbol),
+        workingAlias: alias?.workingAlias ?? null,
+        livePrice: null,
+        liveVolume: null,
+        liveRvol: null,
+        liveAsOf: null,
+        providerAttempts: alias?.attemptedSymbols,
+        quoteStatus: alias?.attemptedSymbols.some((attempt) => attempt.hasQuote) ? "present" as const : undefined,
+        volumeStatus: alias?.attemptedSymbols.some((attempt) => attempt.hasVolume) ? "present" as const : undefined,
+        rvolStatus: candidate.rvol > 0 ? "available" as const : undefined,
+      };
+    }
+    return {
+      liveDataStatus: "memory_only" as const,
+      liveDataMissingReason: "Manuellt tracked/market memory. Ingen färsk providerträff i senaste scan.",
+      attemptedSymbols: alias?.attemptedSymbols.map((attempt) => attempt.symbol),
+      workingAlias: alias?.workingAlias ?? null,
+      livePrice: null,
+      liveVolume: null,
+      liveRvol: null,
+      liveAsOf: null,
+      providerAttempts: alias?.attemptedSymbols,
+      quoteStatus: alias?.attemptedSymbols.some((attempt) => attempt.hasQuote) ? "present" as const : undefined,
+      volumeStatus: alias?.attemptedSymbols.some((attempt) => attempt.hasVolume) ? "present" as const : undefined,
+      rvolStatus: alias?.attemptedSymbols.some((attempt) => attempt.hasVolume) ? "available" as const : undefined,
+    };
+  }
   for (const candidate of input.candidates) {
+    const live = liveMeta(candidate.ticker, candidate);
     tracked.set(candidate.ticker, {
       ticker: candidate.ticker,
       company: candidate.company,
@@ -1088,10 +1251,12 @@ function buildTrackedUniverse(input: {
       lastKnownScore: candidate.score,
       lastKnownConfidence: candidate.confidence,
       candidate,
+      ...live,
     });
   }
   for (const candidate of input.recentlyActive) {
     if (tracked.has(candidate.ticker)) continue;
+    const live = liveMeta(candidate.ticker, candidate);
     tracked.set(candidate.ticker, {
       ticker: candidate.ticker,
       company: candidate.company,
@@ -1102,32 +1267,39 @@ function buildTrackedUniverse(input: {
       lastKnownScore: candidate.score,
       lastKnownConfidence: candidate.confidence,
       candidate,
+      ...live,
     });
   }
   for (const snapshot of input.snapshots) {
     if (snapshot.ticker.toUpperCase() === "BIOX" || tracked.has(snapshot.ticker) || snapshot.source !== "discovery") continue;
+    const identity = UNIVERSE_BY_TICKER.get(snapshot.ticker);
+    const live = liveMeta(snapshot.ticker);
     tracked.set(snapshot.ticker, {
       ticker: snapshot.ticker,
-      company: snapshot.ticker,
+      company: identity?.companyName ?? snapshot.ticker,
       status: "trackedButNotActive",
       source: "persisted_case_state",
       summary: `${snapshot.ticker} finns i market memory men är inte aktiv toppkandidat i senaste scan.`,
       lastKnownState: snapshot.state,
       lastKnownScore: snapshot.score,
       lastKnownConfidence: snapshot.confidence,
+      ...live,
     });
   }
   for (const ticker of DEFAULT_TRACKED_TICKERS) {
     if (tracked.has(ticker)) continue;
+    const identity = UNIVERSE_BY_TICKER.get(ticker);
+    const live = liveMeta(ticker);
     tracked.set(ticker, {
       ticker,
-      company: ticker,
+      company: identity?.companyName ?? ticker,
       status: "trackedButNotActive",
       source: "manual_watch",
-      summary: `${ticker} är manuellt tracked, men saknar färsk livebekräftelse i senaste snapshot.`,
+      summary: `${ticker} är manuellt tracked som ${identity?.companyName ?? "Nordic market memory"}, men saknar färsk livebekräftelse i senaste snapshot.`,
       lastKnownState: null,
       lastKnownScore: null,
       lastKnownConfidence: null,
+      ...live,
     });
   }
   const order: Record<TrackedTickerStatus, number> = {
@@ -1139,6 +1311,42 @@ function buildTrackedUniverse(input: {
   return [...tracked.values()]
     .sort((a, b) => order[a.status] - order[b.status] || a.ticker.localeCompare(b.ticker))
     .slice(0, 80);
+}
+
+function buildLiveCoverageAudit(trackedUniverse: TrackedTicker[]): LiveCoverageAuditItem[] {
+  const trackedByTicker = new Map(trackedUniverse.map((item) => [item.ticker.toUpperCase(), item]));
+  return LIVE_COVERAGE_AUDIT_TICKERS.map((ticker) => {
+    const item = trackedByTicker.get(ticker);
+    const attempts = item?.providerAttempts ?? [];
+    const successfulAttempt = attempts.find((attempt) => attempt.hasQuote && attempt.hasVolume && attempt.bars > 0);
+    const partialAttempt = attempts.find((attempt) => attempt.hasQuote || attempt.hasVolume || attempt.bars > 0);
+    const lastFailedAttempt = [...attempts].reverse().find((attempt) => attempt.error || attempt.statusCode);
+    const fetchStatus: LiveCoverageAuditItem["fetchStatus"] =
+      item?.liveDataStatus === "fresh" && successfulAttempt
+        ? "success"
+        : attempts.length === 0
+          ? "not_attempted"
+          : partialAttempt
+            ? "partial"
+            : "failed";
+    return {
+      ticker,
+      company: item?.company ?? UNIVERSE_BY_TICKER.get(ticker)?.companyName,
+      liveDataStatus: item?.liveDataStatus ?? "not_tracked",
+      providerSymbol: item?.workingAlias ?? successfulAttempt?.symbol ?? partialAttempt?.symbol ?? null,
+      fetchStatus,
+      quoteStatus: item?.quoteStatus ?? (attempts.length > 0 ? "missing" : "unknown"),
+      volumeStatus: item?.volumeStatus ?? (attempts.length > 0 ? "missing" : "unknown"),
+      rvolStatus: item?.rvolStatus ?? (attempts.length > 0 ? "missing_quote" : "unknown"),
+      price: item?.livePrice ?? null,
+      volume: item?.liveVolume ?? null,
+      rvol: item?.liveRvol ?? null,
+      asOf: item?.liveAsOf ?? null,
+      attemptedSymbols: item?.attemptedSymbols ?? [],
+      lastError: lastFailedAttempt?.error ?? item?.liveDataMissingReason ?? null,
+      statusCodes: attempts.map((attempt) => attempt.statusCode),
+    };
+  });
 }
 
 function confidenceTrend(current: number | null | undefined, previous: number | null | undefined): PositionManagementDecision["confidenceTrend"] {
@@ -1629,36 +1837,38 @@ function buildCatalystPulse(candidates: TradingCandidate[]): CanonicalTradingSna
 }
 
 export async function buildCanonicalTradingSnapshot(): Promise<CanonicalTradingSnapshot> {
+  const newsFallback = {
+    providerName: "news ingestion unavailable",
+    mode: "disabled" as const,
+    isLive: false,
+    isConfigured: false,
+    lastFetchAt: new Date().toISOString(),
+    error: "news ingestion timed out or failed",
+    headlineCount: 0,
+    feedHealth: [],
+    generatedAt: new Date().toISOString(),
+    headlines: [],
+  };
   const [discovery, changesResult, newsIngestion] = await Promise.all([
     withTimeout(runAutonomousDiscoveryScan({ provider: yahooLiveMarketReactionProvider }), SNAPSHOT_SCAN_TIMEOUT_MS),
-    getLatestRunChanges().catch(() => null),
-    fetchLatestNewsHeadlinesWithFallback().catch(() => ({
-      providerName: "news ingestion failed",
-      mode: "disabled" as const,
-      isLive: false,
-      isConfigured: false,
-      lastFetchAt: new Date().toISOString(),
-      error: "news ingestion failed",
-      headlineCount: 0,
-      feedHealth: [],
-      generatedAt: new Date().toISOString(),
-      headlines: [],
-    })),
+    withTimeout(getLatestRunChanges().catch(() => null), 6_000),
+    withTimeout(fetchLatestNewsHeadlinesWithFallback().catch(() => newsFallback), 6_000),
   ]);
+  const safeNewsIngestion = newsIngestion ?? newsFallback;
   const now = new Date();
   const dataTimestamp = discovery?.generatedAt ? new Date(discovery.generatedAt) : null;
   const snapshotFreshness = buildSnapshotFreshness(now, dataTimestamp);
-  const newsTriggers = parseNewsTriggers(newsIngestion.headlines).slice(0, 25);
+  const newsTriggers = parseNewsTriggers(safeNewsIngestion.headlines).slice(0, 25);
   const newsByTicker = new Map(
     newsTriggers
-      .filter((trigger) => newsIngestion.isLive && trigger.isFreshToday && trigger.ticker)
+      .filter((trigger) => safeNewsIngestion.isLive && trigger.isFreshToday && trigger.ticker)
       .map((trigger) => [trigger.ticker!.toUpperCase(), trigger]),
   );
   const changeByTicker = new Map<string, string>();
   for (const change of changesResult?.changes ?? []) {
     if (!changeByTicker.has(change.ticker)) changeByTicker.set(change.ticker, change.reason);
   }
-  const persistedSnapshotsPromise = getLatestCaseStateSnapshots(80).catch(() => [] as RunnerCaseSnapshot[]);
+  const persistedSnapshotsPromise = withTimeout(getLatestCaseStateSnapshots(80).catch(() => [] as RunnerCaseSnapshot[]), 6_000);
   const candidates = discovery
     ? (() => {
         const allDiscovery = [
@@ -1680,7 +1890,7 @@ export async function buildCanonicalTradingSnapshot(): Promise<CanonicalTradingS
           .sort(sortCandidates)
           .slice(0, 18);
       })()
-    : (await persistedSnapshotsPromise)
+    : ((await persistedSnapshotsPromise) ?? [])
         .filter((snapshot) => snapshot.source === "discovery")
         .map((snapshot) => toPersistedCandidate(snapshot, changeByTicker.get(snapshot.ticker)))
         .filter((candidate): candidate is TradingCandidate => Boolean(candidate))
@@ -1710,7 +1920,7 @@ export async function buildCanonicalTradingSnapshot(): Promise<CanonicalTradingS
     scannedCount: discovery?.scannedCount ?? 0,
     bucketCounts,
   };
-  const persistedSnapshots = await persistedSnapshotsPromise;
+  const persistedSnapshots = (await persistedSnapshotsPromise) ?? [];
   const recentlyActive = buildRecentlyActive(candidates, persistedSnapshots, changesResult?.changes ?? []);
   const breadth = {
     hot: candidates.filter((candidate) => candidate.sourceBucket === "HOT").slice(0, 8),
@@ -1719,7 +1929,8 @@ export async function buildCanonicalTradingSnapshot(): Promise<CanonicalTradingS
     noChase: candidates.filter((candidate) => candidate.sourceBucket === "PARABOLIC_WATCH" || candidate.sourceBucket === "RISK" || candidate.action === "Het men jaga inte").slice(0, 8),
     recentlyActive,
   };
-  const trackedUniverse = buildTrackedUniverse({ candidates, recentlyActive, snapshots: persistedSnapshots });
+  const trackedUniverse = buildTrackedUniverse({ candidates, recentlyActive, snapshots: persistedSnapshots, discovery });
+  const liveCoverageAudit = buildLiveCoverageAudit(trackedUniverse);
   const positionManagement = buildPositionManagement({
     trackedUniverse,
     previousSnapshots: persistedSnapshots,
@@ -1735,7 +1946,7 @@ export async function buildCanonicalTradingSnapshot(): Promise<CanonicalTradingS
     candidates,
     trackedUniverse,
     snapshotFreshness,
-    newsIsLive: newsIngestion.isLive,
+    newsIsLive: safeNewsIngestion.isLive,
   });
 
   return {
@@ -1761,25 +1972,26 @@ export async function buildCanonicalTradingSnapshot(): Promise<CanonicalTradingS
     warnings: [
       ...(discovery ? buildWarnings(discovery) : ["Live scan timeout. Visar endast senaste persistade discovery-case utan mockdata."]),
       ...buildFreshnessWarnings(snapshotFreshness),
-      ...(!newsIngestion.isLive ? ["News Trigger Inbox använder MOCK/MANUAL eller disabled fallback, inte live Avanza/Finwire/MFN/Cision."] : []),
-      ...(!newsIngestion.isConfigured ? ["News provider not configured: lägg NEWS_RSS_FEEDS för riktig RSS live-ingestion."] : []),
-      ...(newsIngestion.error ? [`News provider issue: ${newsIngestion.error}`] : []),
+      ...(!safeNewsIngestion.isLive ? ["News Trigger Inbox använder MOCK/MANUAL eller disabled fallback, inte live Avanza/Finwire/MFN/Cision."] : []),
+      ...(!safeNewsIngestion.isConfigured ? ["News provider not configured: lägg NEWS_RSS_FEEDS för riktig RSS live-ingestion."] : []),
+      ...(safeNewsIngestion.error ? [`News provider issue: ${safeNewsIngestion.error}`] : []),
     ],
     marketQuality: computedMarketQuality,
     newsProviderStatus: {
-      providerName: newsIngestion.providerName,
-      mode: newsIngestion.mode,
-      isLive: newsIngestion.isLive,
-      isConfigured: newsIngestion.isConfigured,
-      lastFetchAt: newsIngestion.lastFetchAt,
-      error: newsIngestion.error,
-      headlineCount: newsIngestion.headlineCount,
-      feedHealth: newsIngestion.feedHealth,
+      providerName: safeNewsIngestion.providerName,
+      mode: safeNewsIngestion.mode,
+      isLive: safeNewsIngestion.isLive,
+      isConfigured: safeNewsIngestion.isConfigured,
+      lastFetchAt: safeNewsIngestion.lastFetchAt,
+      error: safeNewsIngestion.error,
+      headlineCount: safeNewsIngestion.headlineCount,
+      feedHealth: safeNewsIngestion.feedHealth,
     },
     whatChanged: (changesResult?.changes ?? []).slice(0, 8),
     marketPulse: buildMarketPulse(candidates, computedMarketQuality),
     catalystPulse: buildCatalystPulse(candidates),
     trackedUniverse,
+    liveCoverageAudit,
     positionManagement,
     priorityBoard,
     newsTriggers,

@@ -170,6 +170,15 @@ function tickerGuess(headline: string) {
   return match?.[0] && !["Q1", "Q2", "Q3", "Q4", "CEO", "FDA", "GMP", "CE"].includes(match[0]) ? match[0] : undefined;
 }
 
+function looksTradableHeadline(headline: string, category?: string) {
+  const text = `${headline} ${category ?? ""}`.toLowerCase();
+  const catalyst = /order|kontrakt|ramavtal|avtal|partner|samarbete|finansiering|emission|rapport|q[1-4]\b|vinst|guidance|prognos|insider|köper aktier|säljer aktier|fda|ce\b|gmp|tillstånd|certifikat|produktion|kapacitet|förvärv|bud|uppköp|notering|pressmeddelande/.test(text);
+  const broadNoise = /börsen|omx|index|futures|ränta|inflation|fed|ecb|wall street|asienbörser|geopolitik|olja|guld|dollar|kronan/.test(text);
+  if (catalyst) return true;
+  if (broadNoise && !tickerGuess(headline)) return false;
+  return true;
+}
+
 function stockholmDateKey(date: Date) {
   return new Intl.DateTimeFormat("sv-SE", {
     timeZone: "Europe/Stockholm",
@@ -198,6 +207,7 @@ function parseRssOrAtom(xml: string, sourceUrl: string): RawNewsHeadline[] {
       const link = tagValue(item, "link") ?? atomLink(item);
       const publishedAt = tagValue(item, "pubDate") ?? tagValue(item, "published") ?? tagValue(item, "updated") ?? nowIso();
       const category = categoryGuess(headline, tagValue(item, "category"));
+      if (!looksTradableHeadline(headline, category)) return null;
       return {
         id: `${source}-${index}-${headline.slice(0, 40)}`,
         ticker: tickerGuess(headline),

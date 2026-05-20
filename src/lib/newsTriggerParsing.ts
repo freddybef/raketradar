@@ -59,7 +59,7 @@ export interface NewsTrigger {
   summary: string;
 }
 
-const COMPANY_ALIASES: Array<{ pattern: RegExp; ticker: string; company: string; marketCapSensitivity: number }> = [
+const MANUAL_COMPANY_ALIASES: Array<{ pattern: RegExp; ticker: string; company: string; marketCapSensitivity: number }> = [
   { pattern: /\bdiamyd\b/i, ticker: "DMYD B", company: "Diamyd Medical", marketCapSensitivity: 74 },
   { pattern: /\bapr technologies\b|\bapr\b/i, ticker: "APR", company: "APR Technologies", marketCapSensitivity: 78 },
   { pattern: /\bredsense\b/i, ticker: "REDS", company: "Redsense Medical", marketCapSensitivity: 82 },
@@ -67,7 +67,43 @@ const COMPANY_ALIASES: Array<{ pattern: RegExp; ticker: string; company: string;
   { pattern: /\bepisurf\b/i, ticker: "EPIS B", company: "Episurf Medical", marketCapSensitivity: 80 },
   { pattern: /\bnexam\b/i, ticker: "NEXAM", company: "Nexam Chemical", marketCapSensitivity: 70 },
   { pattern: /\bsht\b/i, ticker: "SHT", company: "SHT Smart High-Tech", marketCapSensitivity: 76 },
+  { pattern: /\bkvix\b/i, ticker: "KVIX", company: "Kvix AB", marketCapSensitivity: 86 },
+  { pattern: /\bgomx\b|\bgomspace\b|\bgom space\b/i, ticker: "GOMX", company: "GomSpace Group AB", marketCapSensitivity: 82 },
+  { pattern: /\bsive\b|\bsivers\b|\bsievers\b|\bsivers semiconductors\b|\bsievers semiconductors\b/i, ticker: "SIVE", company: "Sivers Semiconductors AB", marketCapSensitivity: 72 },
+  { pattern: /\byubico\b|\byubi\b/i, ticker: "YUBICO", company: "Yubico AB", marketCapSensitivity: 58 },
+  { pattern: /\bmildef\b|\bmil def\b/i, ticker: "MILDEF", company: "MilDef Group AB", marketCapSensitivity: 58 },
+  { pattern: /\baac clyde\b|\baac clyde space\b|\baccon\b|\baac\b/i, ticker: "AAC", company: "AAC Clyde Space AB", marketCapSensitivity: 82 },
 ];
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function companyAliasPattern(companyName: string, ticker: string) {
+  const compactName = companyName
+    .replace(/\bAB\b/gi, "")
+    .replace(/\bGroup\b/gi, "")
+    .replace(/\bHolding\b/gi, "")
+    .replace(/\bHoldings\b/gi, "")
+    .replace(/\bplc\b/gi, "")
+    .replace(/\(publ\)/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const alternatives = [ticker, companyName, compactName]
+    .map((item) => item.trim())
+    .filter((item, index, array) => item.length >= 3 && array.indexOf(item) === index)
+    .map(escapeRegExp);
+  return new RegExp(`\\b(?:${alternatives.join("|")})\\b`, "i");
+}
+
+const UNIVERSE_COMPANY_ALIASES = getSwedishEquityUniverse().map((entry) => ({
+  pattern: companyAliasPattern(entry.companyName, entry.ticker),
+  ticker: entry.ticker,
+  company: entry.companyName,
+  marketCapSensitivity: entry.marketCapBucket === "micro" ? 82 : entry.marketCapBucket === "small" ? 72 : entry.marketCapBucket === "mid" ? 58 : 35,
+}));
+
+const COMPANY_ALIASES = [...MANUAL_COMPANY_ALIASES, ...UNIVERSE_COMPANY_ALIASES];
 
 function asArray(input: Array<string | RawHeadlineInput>) {
   return input
@@ -96,10 +132,12 @@ function isFreshToday(publishedAt: string) {
 
 function resolveCompany(input: RawHeadlineInput) {
   if (input.ticker || input.company) {
+    const ticker = input.ticker?.toUpperCase().trim() ?? null;
+    const universeMatch = ticker ? getSwedishEquityUniverse().find((entry) => entry.ticker === ticker) : null;
     return {
-      ticker: input.ticker?.toUpperCase().trim() ?? null,
-      company: input.company?.trim() ?? null,
-      marketCapSensitivity: 60,
+      ticker,
+      company: input.company?.trim() ?? universeMatch?.companyName ?? null,
+      marketCapSensitivity: universeMatch?.marketCapBucket === "micro" ? 82 : universeMatch?.marketCapBucket === "small" ? 72 : 60,
     };
   }
   const match = COMPANY_ALIASES.find((entry) => entry.pattern.test(input.headline));
@@ -140,6 +178,17 @@ function classifyTrigger(headline: string): {
       baseStrength: 76,
       secondDerivativeScore: 64,
       summary: "Partnerskap/utvärdering som kan signalera kommersiell validering snarare än ren tradingrörelse.",
+    };
+  }
+  if (/produktionskapacitet|produktion|produktionslinje|fabrik|anläggning|kapacitet|scale-up|skalar upp|expanderar produktion|production expansion|manufacturing/.test(text)) {
+    tags.push("production", "commercialization");
+    return {
+      triggerType: "COMMERCIALIZATION",
+      narrativeTriggerType: "COMMERCIALIZATION_SHIFT",
+      thematicTags: tags,
+      baseStrength: 74,
+      secondDerivativeScore: 56,
+      summary: "Produktions-/kapacitetssignal som kan flytta bolaget från utveckling mot kommersiell leverans.",
     };
   }
   if (/order|kontrakt|ramavtal|avtal|contract|kundorder/.test(text)) {
@@ -252,7 +301,7 @@ function classifyTrigger(headline: string): {
       summary: "Riktkurs/analytiker är lågprioritet utan small-cap och live reaction.",
     };
   }
-  if (/market signal|börsen|omx|ränta|inflation|usa|futures|makro/.test(text)) {
+  if (/market signal|börsen|omx|index|ränta|inflation|usa|futures|makro|geopolitik|fed|ecb|olja|guld|dollar|kronan|wall street|asienbörser/.test(text)) {
     tags.push("macro");
     return {
       triggerType: "MACRO_NOISE",
@@ -284,6 +333,15 @@ function verificationState(input: {
   if (!input.isFreshToday) return "UNVERIFIED";
   if (!input.ticker && input.narrativeTriggerType === "UNKNOWN") return "PRICE_ONLY";
   return "VERIFIED";
+}
+
+function isTradableNordicTrigger(trigger: NewsTrigger) {
+  if (trigger.triggerType === "MACRO_NOISE") return false;
+  if (trigger.triggerType === "UNKNOWN") return Boolean(trigger.ticker) && trigger.isFreshToday && trigger.triggerStrength >= 45;
+  if (trigger.triggerType === "ANALYST_TARGET") return Boolean(trigger.ticker) && trigger.isFreshToday && trigger.repricingPotential >= 45;
+  if (trigger.triggerType === "SECTOR_THEME") return Boolean(trigger.ticker) && trigger.isFreshToday && trigger.repricingPotential >= 55;
+  if (!trigger.ticker && trigger.triggerStrength < 58) return false;
+  return trigger.isFreshToday || Boolean(trigger.ticker) || trigger.triggerStrength >= 65;
 }
 
 export function parseNewsTriggers(rawHeadlines: Array<string | RawHeadlineInput>): NewsTrigger[] {
@@ -331,6 +389,7 @@ export function parseNewsTriggers(rawHeadlines: Array<string | RawHeadlineInput>
         summary: classified.summary,
       };
     })
-    .filter((trigger) => trigger.triggerType !== "MACRO_NOISE" || trigger.triggerStrength >= 30)
+    .filter(isTradableNordicTrigger)
     .sort((a, b) => b.repricingPotential - a.repricingPotential || b.triggerStrength - a.triggerStrength);
 }
+import { getSwedishEquityUniverse } from "@/lib/market/swedishEquityUniverse";

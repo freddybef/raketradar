@@ -51,11 +51,33 @@ export interface AutonomousDiscoveryResult {
   liveHits: number;
   missingDataCount: number;
   coverageByExchange: Array<{ exchange: string; total: number; liveHits: number; missing: number; coveragePercent: number }>;
-  missingTickers: Array<{ ticker: string; companyName: string; exchange: string; sector: string; reason: "no_price_data" | "identity_blocked" | "provider_failed" }>;
+  missingTickers: Array<{
+    ticker: string;
+    companyName: string;
+    exchange: string;
+    sector: string;
+    reason: "no_price_data" | "missing_ticker_mapping" | "wrong_market_suffix" | "unsupported_data_provider" | "failed_fetch" | "no_volume_or_rvol";
+    detail: string;
+    attemptedSymbols: string[];
+    providerAttempts: Array<{
+      symbol: string;
+      range: "1d" | "1mo";
+      interval: "5m" | "1d";
+      statusCode: number | null;
+      error: string | null;
+      hasQuote: boolean;
+      hasVolume: boolean;
+      bars: number;
+    }>;
+    quoteStatus: "present" | "missing";
+    volumeStatus: "present" | "missing";
+    rvolStatus: "available" | "missing_daily_baseline" | "missing_volume" | "missing_quote";
+  }>;
   aliasDebug: YahooAliasDebugEntry[];
   suppressedByReason: Array<{ reason: string; count: number }>;
   bucketCounts: Record<DiscoveryBucket, number>;
   scanned: number;
+  liveReactions: LiveMarketReaction[];
   candidates: AutonomousDiscoveryCandidate[];
   hotMovers: AutonomousDiscoveryCandidate[];
   watchMovers: AutonomousDiscoveryCandidate[];
@@ -318,15 +340,113 @@ export async function runAutonomousDiscoveryScan(input: {
       coveragePercent: scoped.length > 0 ? Math.round((liveHits / scoped.length) * 100) : 0,
     };
   });
+  const aliasDebug = getYahooAliasDebugSnapshot();
+  const aliasDebugByTicker = new Map(aliasDebug.map((entry) => [entry.ticker.toUpperCase(), entry]));
+  function missingReason(entry: SwedishEquityUniverseEntry) {
+    const debug = aliasDebugByTicker.get(entry.ticker.toUpperCase());
+    const attemptedSymbols = debug?.attemptedSymbols.map((attempt) => attempt.symbol) ?? [];
+    const providerAttempts = debug?.attemptedSymbols.map((attempt) => ({
+      symbol: attempt.symbol,
+      range: attempt.range,
+      interval: attempt.interval,
+      statusCode: attempt.statusCode,
+      error: attempt.error,
+      hasQuote: attempt.hasQuote,
+      hasVolume: attempt.hasVolume,
+      bars: attempt.bars,
+    })) ?? [];
+    const hadDaily = Boolean(debug?.attemptedSymbols.some((attempt) => attempt.range === "1mo" && attempt.interval === "1d" && attempt.success));
+    const hadIntraday = Boolean(debug?.attemptedSymbols.some((attempt) => attempt.range === "1d" && attempt.interval === "5m" && attempt.success));
+    const hasAnyQuote = Boolean(debug?.attemptedSymbols.some((attempt) => attempt.hasQuote));
+    const hasAnyVolume = Boolean(debug?.attemptedSymbols.some((attempt) => attempt.hasVolume));
+    const lastError = debug?.lastError ?? null;
+    const quoteStatus = hasAnyQuote ? "present" as const : "missing" as const;
+    const volumeStatus = hasAnyVolume ? "present" as const : "missing" as const;
+    const rvolStatus =
+      !hasAnyQuote
+        ? "missing_quote" as const
+        : !hasAnyVolume
+          ? "missing_volume" as const
+          : !hadDaily
+            ? "missing_daily_baseline" as const
+            : "available" as const;
+    if (!debug || attemptedSymbols.length === 0) {
+      return {
+        reason: "missing_ticker_mapping" as const,
+        detail: "Providern försökte aldrig någon symbol. Ticker saknar effektiv provider-mapping.",
+        attemptedSymbols,
+        providerAttempts,
+        quoteStatus,
+        volumeStatus,
+        rvolStatus,
+      };
+    }
+    if (hadDaily && !hadIntraday) {
+      return {
+        reason: "unsupported_data_provider" as const,
+        detail: "Yahoo gav daily bars men ingen intraday/5m-data. Behandlas som saknad färsk livebekräftelse.",
+        attemptedSymbols,
+        providerAttempts,
+        quoteStatus,
+        volumeStatus,
+        rvolStatus,
+      };
+    }
+    if (hadIntraday && !hadDaily) {
+      return {
+        reason: "no_volume_or_rvol" as const,
+        detail: "Intraday finns men daily-baseline saknas, så RVOL/volymkvalitet kan inte beräknas.",
+        attemptedSymbols,
+        providerAttempts,
+        quoteStatus,
+        volumeStatus,
+        rvolStatus,
+      };
+    }
+    if (lastError?.startsWith("http_404") || lastError === "empty_or_invalid_chart") {
+      return {
+        reason: "wrong_market_suffix" as const,
+        detail: `Alla provade Yahoo-symboler saknade chartdata (${lastError}). Troligen fel suffix eller ej stödd marknadsplats.`,
+        attemptedSymbols,
+        providerAttempts,
+        quoteStatus,
+        volumeStatus,
+        rvolStatus,
+      };
+    }
+    if (lastError) {
+      return {
+        reason: "failed_fetch" as const,
+        detail: `Provider fetch misslyckades: ${lastError}.`,
+        attemptedSymbols,
+        providerAttempts,
+        quoteStatus,
+        volumeStatus,
+        rvolStatus,
+      };
+    }
+    return {
+      reason: "no_price_data" as const,
+      detail: "Providern svarade utan användbara price/volume bars för provade symboler.",
+      attemptedSymbols,
+      providerAttempts,
+      quoteStatus,
+      volumeStatus,
+      rvolStatus,
+    };
+  }
   const missingTickers = universe
     .filter((entry) => !reactionByTicker.has(entry.ticker))
-    .map((entry) => ({
-      ticker: entry.ticker,
-      companyName: entry.companyName,
-      exchange: entry.exchange,
-      sector: entry.sector,
-      reason: "no_price_data" as const,
-    }))
+    .map((entry) => {
+      const missing = missingReason(entry);
+      return {
+        ticker: entry.ticker,
+        companyName: entry.companyName,
+        exchange: entry.exchange,
+        sector: entry.sector,
+        ...missing,
+      };
+    })
     .sort((a, b) => a.exchange.localeCompare(b.exchange) || a.ticker.localeCompare(b.ticker));
   const suppressedByReason = countReasons(candidates.flatMap((candidate) => candidate.suppressionReasons.length > 0 ? candidate.suppressionReasons : candidate.bucket === "SUPPRESSED" ? ["ranking suppression"] : []));
   const bucketCounts = {
@@ -346,10 +466,11 @@ export async function runAutonomousDiscoveryScan(input: {
     missingDataCount: Math.max(0, universe.length - reactions.length),
     coverageByExchange,
     missingTickers,
-    aliasDebug: getYahooAliasDebugSnapshot(),
+    aliasDebug,
     suppressedByReason,
     bucketCounts,
     scanned: reactions.length,
+    liveReactions: reactions,
     candidates: ranked,
     hotMovers: buckets.HOT,
     watchMovers: buckets.WATCH,

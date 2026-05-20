@@ -1,4 +1,5 @@
 import type { MarketRegion } from "@/lib/market/tickerIdentity";
+import { getSwedishEquityUniverse } from "@/lib/market/swedishEquityUniverse";
 
 export type AvanzaImportConfidence = "VERIFIED" | "HIGH" | "MEDIUM" | "LOW" | "REJECTED";
 
@@ -43,7 +44,7 @@ const SWEDISH_MARKET_HINTS = [
 
 const BLOCKED_US_TICKERS = new Set(["BIOX"]);
 
-const REGISTRY: SwedishEquityRegistryEntry[] = [
+const BASE_REGISTRY: SwedishEquityRegistryEntry[] = [
   { ticker: "HOIST", aliases: ["HOIST"], companyName: "Hoist Finance AB", exchange: "Sweden", country: "SE", currency: "SEK" },
   { ticker: "BIOA", aliases: ["BIOA", "BIOA B", "BIOARCTIC", "BIOARCTIC B"], companyName: "BioArctic AB", exchange: "Sweden", country: "SE", currency: "SEK" },
   { ticker: "TOBII", aliases: ["TOBII", "TOBII AB"], companyName: "Tobii AB", exchange: "Sweden", country: "SE", currency: "SEK" },
@@ -51,9 +52,10 @@ const REGISTRY: SwedishEquityRegistryEntry[] = [
   { ticker: "YUBICO", aliases: ["YUBICO"], companyName: "Yubico AB", exchange: "First North", country: "SE", currency: "SEK" },
   { ticker: "ASTOR", aliases: ["ASTOR", "ASTOR GROUP"], companyName: "Astor Group AB", exchange: "Spotlight", country: "SE", currency: "SEK" },
   { ticker: "SIVE", aliases: ["SIVE", "SIVERS", "SIVERS SEMICONDUCTORS"], companyName: "Sivers Semiconductors AB", exchange: "Sweden", country: "SE", currency: "SEK" },
-  { ticker: "ADVE", aliases: ["ADVE", "ADVENTURE BOX"], companyName: "Adventure Box Technology AB", exchange: "Spotlight", country: "SE", currency: "SEK" },
-  { ticker: "ACCON", aliases: ["ACCON", "AAC CLYDE SPACE", "AAC"], companyName: "AAC Clyde Space AB", exchange: "First North", country: "SE", currency: "SEK" },
-  { ticker: "SHT", aliases: ["SHT", "SMART HIGH TECH"], companyName: "Smart High Tech AB", exchange: "Spotlight", country: "SE", currency: "SEK" },
+  { ticker: "ADVE", aliases: ["ADVE", "ADVENICA", "ADVENICA AB"], companyName: "Advenica AB", exchange: "Sweden", country: "SE", currency: "SEK" },
+  { ticker: "ADVBOX", aliases: ["ADVBOX", "ADVENTURE BOX", "ADVENTURE BOX TECHNOLOGY"], companyName: "Adventure Box Technology AB", exchange: "First North", country: "SE", currency: "SEK" },
+  { ticker: "AAC", aliases: ["AAC", "ACCON", "AAC CLYDE SPACE", "ÅAC", "AAC CLYDE"], companyName: "AAC Clyde Space AB", exchange: "First North", country: "SE", currency: "SEK" },
+  { ticker: "SHT", aliases: ["SHT", "SHT B", "SMART HIGH TECH", "SMART HIGH-TECH", "SMART HIGH TECH B"], companyName: "Smart High Tech AB", exchange: "Spotlight", country: "SE", currency: "SEK" },
   { ticker: "SBB B", aliases: ["SBB B", "SBBB", "SAMHALLSBYGGNADSBOLAGET B", "SAMHALLSBYGGNADSBOLAGET"], companyName: "Samhallsbyggnadsbolaget i Norden AB", exchange: "Sweden", country: "SE", currency: "SEK" },
   { ticker: "BERG B", aliases: ["BERG B", "BERGB", "BERGMAN & BEVING B", "BERGMAN BEVING"], companyName: "Bergman & Beving AB", exchange: "Sweden", country: "SE", currency: "SEK" },
   { ticker: "CI B", aliases: ["CI B", "CIB", "CINT B", "CINT"], companyName: "Cint Group AB", exchange: "Sweden", country: "SE", currency: "SEK" },
@@ -66,6 +68,46 @@ const REGISTRY: SwedishEquityRegistryEntry[] = [
   { ticker: "NORDREST", aliases: ["NORDREST"], companyName: "Nordrest Holding AB", exchange: "First North", country: "SE", currency: "SEK" },
   { ticker: "MEDI", aliases: ["MEDI", "MEDIVIR"], companyName: "Medivir AB", exchange: "Sweden", isin: "SE0000273294", country: "SE", currency: "SEK" },
 ];
+
+const EXTRA_TRADER_ALIASES: Record<string, string[]> = {
+  AAC: ["ACCON", "ÅAC", "AAC CLYDE", "AAC CLYDE SPACE"],
+  GOMX: ["GOMSPACE", "GOM SPACE"],
+  KVIX: ["KVIX AB"],
+  MILDEF: ["MILDEF GROUP", "MIL DEF"],
+  NEXAM: ["NEXAM CHEMICAL", "NEXAM CHEMICAL HOLDING"],
+  SHT: ["SHT B", "SMART HIGH-TECH", "SMART HIGH TECH B"],
+  SIVE: ["SIVERS", "SIEVERS", "SIVERS SEMI", "SIVERS SEMICONDUCTORS", "SIEVERS SEMICONDUCTORS"],
+  YUBICO: ["YUBI", "YUBICO AB"],
+};
+
+function universeAliases(entry: ReturnType<typeof getSwedishEquityUniverse>[number]) {
+  const compactTicker = entry.ticker.replace(/\s/g, "");
+  const baseName = entry.companyName
+    .replace(/\bAB\b/gi, "")
+    .replace(/\(publ\)/gi, "")
+    .replace(/\bGroup\b/gi, "")
+    .replace(/\bHolding\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return [...new Set([entry.ticker, compactTicker, entry.companyName, baseName, ...(EXTRA_TRADER_ALIASES[entry.ticker] ?? [])].filter(Boolean))];
+}
+
+const REGISTRY: SwedishEquityRegistryEntry[] = (() => {
+  const byTicker = new Map(BASE_REGISTRY.map((entry) => [entry.ticker, entry]));
+  for (const entry of getSwedishEquityUniverse()) {
+    const existing = byTicker.get(entry.ticker);
+    byTicker.set(entry.ticker, {
+      ticker: entry.ticker,
+      aliases: [...new Set([...(existing?.aliases ?? []), ...universeAliases(entry)])],
+      companyName: existing?.companyName ?? entry.companyName,
+      exchange: existing?.exchange ?? entry.exchange,
+      isin: existing?.isin,
+      country: existing?.country ?? "SE",
+      currency: existing?.currency ?? "SEK",
+    });
+  }
+  return [...byTicker.values()];
+})();
 
 function normalizeText(value?: string | null) {
   return (value ?? "")

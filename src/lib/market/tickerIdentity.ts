@@ -1,3 +1,5 @@
+import { getSwedishEquityUniverse } from "@/lib/market/swedishEquityUniverse";
+
 export type MarketRegion =
   | "Sweden"
   | "Nasdaq US"
@@ -122,6 +124,46 @@ const COMPANY_ALIASES: Record<string, string> = {
   "bioceres crop solutions corp": "BIOX",
   "episurf medical": "EPIS B",
   episurf: "EPIS B",
+  aac: "AAC",
+  "aac clyde": "AAC",
+  "aac clyde space": "AAC",
+  accon: "AAC",
+  gomspace: "GOMX",
+  "gom space": "GOMX",
+  kvix: "KVIX",
+  "kvix ab": "KVIX",
+  mildef: "MILDEF",
+  "mildef group": "MILDEF",
+  "mil def": "MILDEF",
+  nexam: "NEXAM",
+  "nexam chemical": "NEXAM",
+  sht: "SHT",
+  "sht b": "SHT",
+  "smart high tech": "SHT",
+  "smart high-tech": "SHT",
+  sivers: "SIVE",
+  sievers: "SIVE",
+  "sivers semi": "SIVE",
+  "sivers semiconductors": "SIVE",
+  "sievers semiconductors": "SIVE",
+  yubico: "YUBICO",
+};
+
+const TICKER_ALIASES: Record<string, string> = {
+  AACCLYDE: "AAC",
+  ACCON: "AAC",
+  GOMSPACE: "GOMX",
+  KVIXAB: "KVIX",
+  MILDEFAB: "MILDEF",
+  MILDEFGROUP: "MILDEF",
+  NEXAMCHEMICAL: "NEXAM",
+  SHTB: "SHT",
+  SMARTHIGHTECH: "SHT",
+  SIEVERS: "SIVE",
+  SIEVERSSEMICONDUCTORS: "SIVE",
+  SIVERS: "SIVE",
+  SIVERSSEMICONDUCTORS: "SIVE",
+  YUBI: "YUBICO",
 };
 
 function cleanTicker(value: string) {
@@ -155,8 +197,28 @@ function sourceLooksUs(source?: string) {
   return ["yahoo", "nasdaq us", "reddit", "x/twitter"].some((needle) => normalized.includes(needle));
 }
 
+function universeIdentities(): CanonicalTickerIdentity[] {
+  return getSwedishEquityUniverse().map((entry) => ({
+    ticker: entry.ticker,
+    companyName: entry.companyName,
+    exchange: entry.exchange,
+    country: "SE",
+    currency: "SEK",
+    isin: null,
+    sourceConfidence: entry.verified ? 86 : 72,
+  }));
+}
+
+function allCanonicalIdentities() {
+  const byTicker = new Map<string, CanonicalTickerIdentity>();
+  for (const identity of [...CANONICAL_IDENTITIES, ...universeIdentities()]) {
+    if (!byTicker.has(identity.ticker)) byTicker.set(identity.ticker, identity);
+  }
+  return [...byTicker.values()];
+}
+
 function byTicker(ticker: string) {
-  return CANONICAL_IDENTITIES.filter((identity) => identity.ticker === ticker);
+  return allCanonicalIdentities().filter((identity) => identity.ticker === ticker);
 }
 
 function byCompanyName(companyName?: string | null) {
@@ -166,7 +228,7 @@ function byCompanyName(companyName?: string | null) {
   if (alias) return byTicker(alias)[0] ?? null;
 
   return (
-    CANONICAL_IDENTITIES.find((identity) => {
+    allCanonicalIdentities().find((identity) => {
       const canonical = normalizeName(identity.companyName);
       return canonical === normalized || canonical.includes(normalized) || normalized.includes(canonical);
     }) ?? null
@@ -180,7 +242,8 @@ export function resolveTickerIdentity(input: {
   exchangeHint?: MarketRegion;
   swedishFirstMode?: boolean;
 }): TickerValidationResult {
-  const ticker = cleanTicker(input.ticker);
+  const cleanedTicker = cleanTicker(input.ticker);
+  const ticker = TICKER_ALIASES[cleanedTicker.replace(/\s/g, "")] ?? cleanedTicker;
   const candidates = byTicker(ticker);
   const nameCandidate = byCompanyName(input.companyName);
   const swedishFirstMode = input.swedishFirstMode ?? true;

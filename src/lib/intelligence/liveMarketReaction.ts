@@ -30,6 +30,7 @@ export interface LiveMarketReaction {
   exchange: string;
   asOf: string;
   price: number;
+  volume: number;
   intradayMomentum: number;
   relativeVolume: number;
   gapPercent: number;
@@ -208,6 +209,7 @@ export async function calculateLiveMarketReactions(input: {
         exchange,
         asOf: latest.timestamp,
         price: latest.close,
+        volume: Math.round(intradayVolume),
         intradayMomentum: Number(momentum.toFixed(2)),
         relativeVolume: Number(rvol.toFixed(2)),
         gapPercent: Number(gapPercent.toFixed(2)),

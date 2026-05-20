@@ -467,17 +467,9 @@ type TrackedItem = CanonicalTradingSnapshot["trackedUniverse"][number];
 type PositionItem = CanonicalTradingSnapshot["positionManagement"][number];
 type EarlyRadarItem = CanonicalTradingSnapshot["earlyRadar"][number];
 type SelectableItem = TradingCandidate | PriorityItem | NewsTriggerItem | TrackedItem | PositionItem | EarlyRadarItem;
-
-const clickableCardClass =
-  "cursor-pointer rounded border border-zinc-800 bg-zinc-950/70 p-3 text-left text-sm transition hover:border-cyan-800 hover:bg-zinc-900/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-500";
-
-function ClickableCard({ children, className = "", onClick }: { children: ReactNode; className?: string; onClick: () => void }) {
-  return (
-    <button type="button" onClick={onClick} className={`${clickableCardClass} ${className}`}>
-      {children}
-    </button>
-  );
-}
+type SelectedDetail =
+  | { type: "candidate"; candidate: TradingCandidate }
+  | { type: "news"; newsTrigger: NewsTriggerItem };
 
 function candidateFromPriority(snapshot: CanonicalTradingSnapshot, item: PriorityItem): TradingCandidate {
   const candidate =
@@ -764,6 +756,16 @@ function candidateFromEarlyRadar(snapshot: CanonicalTradingSnapshot, item: Early
   };
 }
 
+function matchedCandidateForNews(snapshot: CanonicalTradingSnapshot, item: NewsTriggerItem) {
+  if (!item.ticker) return null;
+  return (
+    snapshot.candidates.find((entry) => entry.ticker === item.ticker) ??
+    Object.values(snapshot.breadth).flat().find((entry) => entry.ticker === item.ticker) ??
+    snapshot.trackedUniverse.find((entry) => entry.ticker === item.ticker)?.candidate ??
+    null
+  );
+}
+
 function CaseDrawer({ candidate, onClose }: { candidate: TradingCandidate; onClose: () => void }) {
   return (
     <div className="fixed inset-0 z-50 bg-black/70 p-3 md:p-6" onClick={onClose}>
@@ -860,6 +862,124 @@ function CaseDrawer({ candidate, onClose }: { candidate: TradingCandidate; onClo
   );
 }
 
+function NewsDetailDrawer({
+  newsTrigger,
+  matchedCandidate,
+  onClose,
+  onOpenMatchedCase,
+}: {
+  newsTrigger: NewsTriggerItem;
+  matchedCandidate: TradingCandidate | null;
+  onClose: () => void;
+  onOpenMatchedCase: () => void;
+}) {
+  const confirmation = matchedCandidate?.trigger ?? "Pris/volym måste bekräfta rubriken i live snapshot; annars är detta bara headline-risk.";
+  const unresolved = !newsTrigger.ticker;
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 p-3 md:p-6" onClick={onClose}>
+      <div
+        className="ml-auto h-full max-w-2xl overflow-y-auto rounded border border-zinc-800 bg-zinc-950 p-5 shadow-2xl shadow-black"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3 border-b border-zinc-800 pb-4">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className={unresolved ? "rounded border border-amber-800/70 bg-amber-950/30 px-2 py-0.5 text-xs text-amber-100" : "rounded border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-xs text-zinc-300"}>
+                {unresolved ? "Unresolved news signal" : `${newsTrigger.ticker}${newsTrigger.company ? ` / ${newsTrigger.company}` : ""}`}
+              </span>
+              <span className={`rounded border px-2 py-0.5 text-xs ${verificationClass(newsTrigger.triggerVerificationState)}`}>
+                {verificationLabel(newsTrigger.triggerVerificationState)}
+              </span>
+              <span className="rounded border border-violet-800/70 bg-violet-950/30 px-2 py-0.5 text-xs text-violet-200">{newsTrigger.triggerType}</span>
+            </div>
+            <p className="mt-2 text-xs uppercase tracking-[0.2em] text-zinc-600">Raw news signal</p>
+            <h2 className="mt-2 text-2xl font-semibold leading-8 text-zinc-50">{newsTrigger.headline}</h2>
+            <p className="mt-2 text-sm text-zinc-500">
+              {newsTrigger.source} · {new Date(newsTrigger.publishedAt).toLocaleString("sv-SE")} · {ageMinutes(newsTrigger.publishedAt)} gammal
+            </p>
+          </div>
+          <button type="button" onClick={onClose} className="rounded border border-zinc-700 px-3 py-1 text-sm text-zinc-300 hover:bg-zinc-900">
+            Stäng
+          </button>
+        </div>
+
+        <div className="mt-4 grid gap-3 md:grid-cols-3">
+          <div className="rounded border border-zinc-800 bg-zinc-950/60 p-3">
+            <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">Observed trigger</div>
+            <div className="mt-1 text-base font-semibold text-zinc-200">{unresolved ? "Observational" : `${newsTrigger.triggerStrength}/100`}</div>
+            <div className="mt-1 text-[11px] text-zinc-600">{unresolved ? `${newsTrigger.triggerStrength}/100 after entity validation` : "parsed headline strength"}</div>
+          </div>
+          <div className="rounded border border-zinc-800 bg-zinc-950/60 p-3">
+            <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">Repricing clue</div>
+            <div className="mt-1 text-base font-semibold text-zinc-200">{unresolved ? "Not tradable yet" : `${newsTrigger.repricingPotential}/100`}</div>
+            <div className="mt-1 text-[11px] text-zinc-600">{unresolved ? `${newsTrigger.repricingPotential}/100 signal only` : "requires market confirmation"}</div>
+          </div>
+          <div className="rounded border border-zinc-800 bg-zinc-950/60 p-3">
+            <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">Age</div>
+            <div className="mt-1 text-base font-semibold text-zinc-200">{ageMinutes(newsTrigger.publishedAt)}</div>
+          </div>
+        </div>
+
+        <div className="mt-4 space-y-3">
+          <div className="rounded border border-violet-900/70 bg-violet-950/20 p-4">
+            <p className="text-xs uppercase tracking-[0.2em] text-violet-300">Trigger interpretation</p>
+            <p className="mt-2 text-sm leading-6 text-zinc-100">{newsTrigger.summary}</p>
+            <p className="mt-2 text-xs text-zinc-500">
+              {newsTrigger.source} · {new Date(newsTrigger.publishedAt).toLocaleString("sv-SE")} · {narrativeLabel(newsTrigger.narrativeTriggerType)}
+            </p>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="rounded border border-zinc-800 p-4">
+              <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Extracted entities / tickers</p>
+              <p className={unresolved ? "mt-2 text-sm text-amber-100" : "mt-2 text-sm text-zinc-100"}>{newsTrigger.ticker ? `${newsTrigger.ticker}${newsTrigger.company ? ` / ${newsTrigger.company}` : ""}` : "No resolved ticker yet"}</p>
+              <p className="mt-1 text-xs text-zinc-600">{unresolved ? "Needs entity resolution before it can enter case ranking." : "Resolved enough to link against candidate memory."}</p>
+            </div>
+            <div className="rounded border border-zinc-800 p-4">
+              <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Trigger reason</p>
+              <p className="mt-2 text-sm text-zinc-100">{newsTrigger.triggerType} · {verificationLabel(newsTrigger.triggerVerificationState)}</p>
+            </div>
+          </div>
+          <div className={unresolved ? "rounded border border-amber-900/70 bg-amber-950/20 p-4" : "rounded border border-emerald-900/70 bg-emerald-950/10 p-4"}>
+            <p className={unresolved ? "text-xs uppercase tracking-[0.2em] text-amber-300" : "text-xs uppercase tracking-[0.2em] text-emerald-300"}>Tradability status</p>
+            <p className="mt-2 text-sm leading-6 text-zinc-100">
+              {unresolved
+                ? "Interesting signal under investigation. Not a tradable case until ticker/entity and live reaction are confirmed."
+                : matchedCandidate
+                  ? "Linked to a candidate in the snapshot. Treat the case view as secondary confirmation."
+                  : "Ticker resolved, but no active matched case yet. Needs live market confirmation."}
+            </p>
+          </div>
+          <div className="rounded border border-cyan-900/70 bg-cyan-950/20 p-4">
+            <p className="text-xs uppercase tracking-[0.2em] text-cyan-300">What would confirm this?</p>
+            <p className="mt-2 text-sm leading-6 text-zinc-100">{confirmation}</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {newsTrigger.url ? (
+              <a
+                href={newsTrigger.url}
+                target="_blank"
+                rel="noreferrer"
+                className="rounded border border-violet-700/60 px-3 py-1 text-xs text-violet-100 hover:bg-violet-950/50"
+              >
+                Open source
+              </a>
+            ) : null}
+            {matchedCandidate ? (
+              <button
+                type="button"
+                onClick={onOpenMatchedCase}
+                className="rounded border border-cyan-700/60 px-3 py-1 text-xs text-cyan-100 hover:bg-cyan-950/50"
+              >
+                Open matched case
+              </button>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function TerminalV2Shell() {
   const [snapshot, setSnapshot] = useState<CanonicalTradingSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
@@ -868,7 +988,7 @@ export function TerminalV2Shell() {
   const [copilotAnswer, setCopilotAnswer] = useState<string | null>(null);
   const [copilotMode, setCopilotMode] = useState<string | null>(null);
   const [copilotLoading, setCopilotLoading] = useState(false);
-  const [selectedCase, setSelectedCase] = useState<TradingCandidate | null>(null);
+  const [selectedDetail, setSelectedDetail] = useState<SelectedDetail | null>(null);
   const [breadthTab, setBreadthTab] = useState<keyof CanonicalTradingSnapshot["breadth"]>("hot");
 
   async function loadSnapshot() {
@@ -940,29 +1060,37 @@ export function TerminalV2Shell() {
   );
   const breadthItems = snapshot?.breadth[breadthTab] ?? [];
 
+  function openCandidate(candidate: TradingCandidate) {
+    setSelectedDetail({ type: "candidate", candidate });
+  }
+
+  function openNews(newsTrigger: NewsTriggerItem) {
+    setSelectedDetail({ type: "news", newsTrigger });
+  }
+
   function openDetailForItem(item: SelectableItem) {
     if (!snapshot) return;
     if ("priorityState" in item) {
-      setSelectedCase(candidateFromPriority(snapshot, item));
+      openCandidate(candidateFromPriority(snapshot, item));
       return;
     }
     if ("headline" in item && "triggerType" in item) {
-      setSelectedCase(candidateFromNewsTrigger(snapshot, item));
+      openNews(item);
       return;
     }
     if ("radarReason" in item) {
-      setSelectedCase(candidateFromEarlyRadar(snapshot, item));
+      openCandidate(candidateFromEarlyRadar(snapshot, item));
       return;
     }
     if ("decision" in item && "whatChanged" in item) {
-      setSelectedCase(candidateFromPosition(snapshot, item));
+      openCandidate(candidateFromPosition(snapshot, item));
       return;
     }
     if ("summary" in item && "status" in item) {
-      setSelectedCase(candidateFromTracked(snapshot, item));
+      openCandidate(candidateFromTracked(snapshot, item));
       return;
     }
-    setSelectedCase(item);
+    openCandidate(item);
   }
 
   if (loading && !snapshot) {
@@ -1178,10 +1306,15 @@ export function TerminalV2Shell() {
           {snapshot.newsTriggers.length > 0 ? (
             <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-5">
               {snapshot.newsTriggers.slice(0, 5).map((item) => (
-                <ClickableCard
+                <button
                   key={`news-trigger-${item.id}`}
-                  onClick={() => openDetailForItem(item)}
-                  className={item.ticker ? "hover:border-violet-700 focus-visible:outline-violet-500" : "border-zinc-800 text-zinc-400 hover:border-amber-700 focus-visible:outline-amber-500"}
+                  type="button"
+                  onClick={() => openNews(item)}
+                  className={`cursor-pointer rounded border border-zinc-800 bg-zinc-950/70 p-3 text-left text-sm transition hover:bg-zinc-900/80 focus-visible:outline focus-visible:outline-2 ${
+                    item.ticker
+                      ? "hover:border-violet-700 focus-visible:outline-violet-500"
+                      : "text-zinc-400 hover:border-amber-700 focus-visible:outline-amber-500"
+                  }`}
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div>
@@ -1199,7 +1332,7 @@ export function TerminalV2Shell() {
                     </span>
                     {item.source} · {ageMinutes(item.publishedAt)} · styrka {item.triggerStrength}/100 · repricing {item.repricingPotential}/100
                   </p>
-                </ClickableCard>
+                </button>
               ))}
             </div>
           ) : (
@@ -1411,7 +1544,20 @@ export function TerminalV2Shell() {
           )}
         </Section>
       </div>
-      {selectedCase ? <CaseDrawer candidate={selectedCase} onClose={() => setSelectedCase(null)} /> : null}
+      {selectedDetail?.type === "candidate" ? (
+        <CaseDrawer candidate={selectedDetail.candidate} onClose={() => setSelectedDetail(null)} />
+      ) : null}
+      {selectedDetail?.type === "news" ? (
+        <NewsDetailDrawer
+          newsTrigger={selectedDetail.newsTrigger}
+          matchedCandidate={matchedCandidateForNews(snapshot, selectedDetail.newsTrigger)}
+          onClose={() => setSelectedDetail(null)}
+          onOpenMatchedCase={() => {
+            const matchedCandidate = matchedCandidateForNews(snapshot, selectedDetail.newsTrigger);
+            if (matchedCandidate) openCandidate(matchedCandidate);
+          }}
+        />
+      ) : null}
     </main>
   );
 }

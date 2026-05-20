@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { calculateLiveMarketReactions } from "@/lib/intelligence/liveMarketReaction";
 import { yahooLiveMarketReactionProvider } from "@/lib/providers/liveMarketReactionProvider";
 
-const DEFAULT_SWEDISH_LIVE_UNIVERSE = ["EPIS B", "HOIST", "BIOA", "TOBII", "SINCH", "YUBICO", "ASTOR", "SIVE", "ADVE", "ACCON", "SHT"];
+const DEFAULT_SWEDISH_LIVE_UNIVERSE = ["EPIS B", "HOIST", "BIOA", "TOBII", "SINCH", "YUBICO", "ASTOR", "SIVE", "ADVE", "AAC", "SHT"];
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
