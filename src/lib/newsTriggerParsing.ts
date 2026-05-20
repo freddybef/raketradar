@@ -26,6 +26,8 @@ export type ParsedNarrativeTriggerType =
   | "FUNDING_SURVIVAL"
   | "UNKNOWN";
 
+export type TriggerVerificationState = "VERIFIED" | "UNVERIFIED" | "PRICE_ONLY" | "THEMATIC";
+
 export interface RawHeadlineInput {
   id?: string;
   ticker?: string;
@@ -33,6 +35,7 @@ export interface RawHeadlineInput {
   headline: string;
   source?: string;
   publishedAt?: string;
+  category?: string;
 }
 
 export interface NewsTrigger {
@@ -50,6 +53,7 @@ export interface NewsTrigger {
   marketCapSensitivity: number;
   secondDerivativeScore: number;
   repricingPotential: number;
+  triggerVerificationState: TriggerVerificationState;
   summary: string;
 }
 
@@ -267,6 +271,19 @@ function classifyTrigger(headline: string): {
   };
 }
 
+function verificationState(input: {
+  triggerType: HeadlineTriggerType;
+  narrativeTriggerType: ParsedNarrativeTriggerType;
+  ticker: string | null;
+  isFreshToday: boolean;
+}): TriggerVerificationState {
+  if (input.triggerType === "SECTOR_THEME") return "THEMATIC";
+  if (input.triggerType === "UNKNOWN" || input.triggerType === "ANALYST_TARGET") return input.ticker ? "UNVERIFIED" : "PRICE_ONLY";
+  if (!input.isFreshToday) return "UNVERIFIED";
+  if (!input.ticker && input.narrativeTriggerType === "UNKNOWN") return "PRICE_ONLY";
+  return "VERIFIED";
+}
+
 export function parseNewsTriggers(rawHeadlines: Array<string | RawHeadlineInput>): NewsTrigger[] {
   return asArray(rawHeadlines)
     .map((input, index) => {
@@ -286,6 +303,12 @@ export function parseNewsTriggers(rawHeadlines: Array<string | RawHeadlineInput>
           classified.secondDerivativeScore * 0.22 +
           (classified.narrativeTriggerType !== "UNKNOWN" ? 8 : 0),
       )));
+      const triggerVerificationState = verificationState({
+        triggerType: classified.triggerType,
+        narrativeTriggerType: classified.narrativeTriggerType,
+        ticker: company.ticker,
+        isFreshToday: freshToday,
+      });
       return {
         id: input.id ?? `${publishedAt}-${index}-${input.headline.slice(0, 24)}`,
         ticker: company.ticker,
@@ -301,6 +324,7 @@ export function parseNewsTriggers(rawHeadlines: Array<string | RawHeadlineInput>
         marketCapSensitivity: company.marketCapSensitivity,
         secondDerivativeScore: classified.secondDerivativeScore,
         repricingPotential,
+        triggerVerificationState,
         summary: classified.summary,
       };
     })

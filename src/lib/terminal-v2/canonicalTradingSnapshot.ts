@@ -1,8 +1,8 @@
 import type { AutonomousDiscoveryCandidate, AutonomousDiscoveryResult, DiscoveryBucket } from "@/lib/intelligence/autonomousDiscovery";
 import { runAutonomousDiscoveryScan } from "@/lib/intelligence/autonomousDiscovery";
 import { getLatestCaseStateSnapshots, getLatestRunChanges, type RankingChange, type RunnerCaseSnapshot } from "@/lib/db/runnerRepository";
-import { fetchLatestNewsHeadlinesWithFallback } from "@/lib/newsIngestion";
-import { parseNewsTriggers, type NewsTrigger } from "@/lib/newsTriggerParsing";
+import { fetchLatestNewsHeadlinesWithFallback, type FeedHealthEntry } from "@/lib/newsIngestion";
+import { parseNewsTriggers, type NewsTrigger, type TriggerVerificationState } from "@/lib/newsTriggerParsing";
 import { yahooLiveMarketReactionProvider } from "@/lib/providers/liveMarketReactionProvider";
 
 export type TradingAction = "Agera" | "Bevaka" | "Het men jaga inte" | "Hog risk" | "Undvik";
@@ -67,6 +67,8 @@ export interface TradingCandidate {
   repricingProbability: number;
   marketAttentionShift: number;
   hasFreshFundamentalCatalyst: boolean;
+  discoveryScore: number;
+  triggerVerificationState: TriggerVerificationState;
 }
 
 export type CatalystType =
@@ -156,6 +158,8 @@ export interface PriorityItem {
   changedFrom?: string | null;
   changedAt?: string | null;
   expiresSoon: boolean;
+  discoveryScore?: number;
+  triggerVerificationState?: TriggerVerificationState;
 }
 
 export interface EarlyRadarItem {
@@ -174,6 +178,7 @@ export interface EarlyRadarItem {
   priorityScore: number;
   source: "newsTrigger" | "trackedMemory" | "candidate" | "hybrid";
   status: "PREOPEN_WATCH" | "OPEN_CONFIRMATION_NEEDED" | "ACTIVE_CONFIRMED" | "REJECTED";
+  triggerVerificationState: TriggerVerificationState;
 }
 
 export interface ProviderStatus {
@@ -216,6 +221,7 @@ export interface CanonicalTradingSnapshot {
     lastFetchAt: string;
     error: string | null;
     headlineCount: number;
+    feedHealth: FeedHealthEntry[];
   };
   whatChanged: Array<RankingChange & { createdAt?: string }>;
   marketPulse: {
@@ -768,6 +774,60 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | nul
   });
 }
 
+function verificationForCandidate(
+  candidate: AutonomousDiscoveryCandidate,
+  narrative: ReturnType<typeof classifyNarrativeTrigger>,
+  newsTrigger?: NewsTrigger,
+): TriggerVerificationState {
+  if (newsTrigger) return newsTrigger.triggerVerificationState;
+  if (narrative.hasFreshFundamentalCatalyst) return "VERIFIED";
+  if (narrative.narrativeTriggerType !== "UNKNOWN" && narrative.thematicTailwind >= 60) return "THEMATIC";
+  if (candidate.reaction.relativeVolume >= 2.8 && candidate.reaction.intradayMomentum >= 4) return "UNVERIFIED";
+  return "PRICE_ONLY";
+}
+
+function discoveryScoreFor(input: {
+  candidate: AutonomousDiscoveryCandidate;
+  freshness: ReturnType<typeof candidateFreshness>;
+  narrative: ReturnType<typeof classifyNarrativeTrigger>;
+  signalQuality: ReturnType<typeof assessSignalQuality>;
+  triggerVerificationState: TriggerVerificationState;
+  hasLiveNewsTrigger: boolean;
+}) {
+  const { candidate, freshness, narrative, signalQuality, triggerVerificationState, hasLiveNewsTrigger } = input;
+  const verificationBoost: Record<TriggerVerificationState, number> = {
+    VERIFIED: 22,
+    THEMATIC: 12,
+    UNVERIFIED: 3,
+    PRICE_ONLY: candidate.reaction.relativeVolume >= 3 ? 0 : -16,
+  };
+  const openingAnomaly =
+    candidate.reaction.relativeVolume >= 1.5 && candidate.reaction.intradayMomentum >= 1.5
+      ? 10
+      : candidate.reaction.relativeVolume < 1.2
+        ? -10
+        : 0;
+  const stalePenalty =
+    !freshness.isActiveToday
+      ? 22
+      : signalQuality.decayScore >= 55
+        ? 16
+        : signalQuality.signalQuality === "STALLED"
+          ? 10
+          : 0;
+  return Math.max(0, Math.min(100, Math.round(
+    narrative.narrativeStrength * 0.28 +
+      narrative.repricingProbability * 0.28 +
+      narrative.thematicTailwind * 0.14 +
+      narrative.marketAttentionShift * 0.12 +
+      candidate.autonomousDiscoveryScore * 0.18 +
+      verificationBoost[triggerVerificationState] +
+      (hasLiveNewsTrigger ? 10 : 0) +
+      openingAnomaly -
+      stalePenalty,
+  )));
+}
+
 function toTradingCandidate(
   candidate: AutonomousDiscoveryCandidate,
   change: string | undefined,
@@ -783,6 +843,15 @@ function toTradingCandidate(
   const newsTrigger = newsByTicker.get(candidate.ticker.toUpperCase());
   const narrative = classifyNarrativeTrigger(candidate, { ...catalyst, score: catalystScore }, freshness, newsTrigger);
   const signalQuality = assessSignalQuality({ candidate, freshness, catalystScore });
+  const triggerVerificationState = verificationForCandidate(candidate, narrative, newsTrigger);
+  const discoveryScore = discoveryScoreFor({
+    candidate,
+    freshness,
+    narrative,
+    signalQuality,
+    triggerVerificationState,
+    hasLiveNewsTrigger: Boolean(newsTrigger?.isFreshToday),
+  });
   const rawAction = actionFor(candidate);
   const action: TradingAction =
     !freshness.isActiveToday
@@ -802,6 +871,7 @@ function toTradingCandidate(
       : narrative.narrativeTriggerType !== "UNKNOWN" && freshness.freshnessStatus === "premarketContext"
         ? Math.round(narrative.narrativeStrength * 0.08)
         : 0;
+  const priceOnlyPenalty = triggerVerificationState === "PRICE_ONLY" && candidate.reaction.relativeVolume < 2.4 ? 10 : 0;
   return {
     ticker: candidate.ticker,
     company: candidate.companyName,
@@ -821,7 +891,7 @@ function toTradingCandidate(
     risk: riskScore(candidate),
     rvol: candidate.reaction.relativeVolume,
     movePct: candidate.reaction.intradayMomentum,
-    score: Math.min(100, candidate.autonomousDiscoveryScore + narrativeBoost),
+    score: Math.max(0, Math.min(100, Math.max(candidate.autonomousDiscoveryScore + narrativeBoost, discoveryScore) - priceOnlyPenalty)),
     confidence: candidate.discoveryConfidence,
     source: candidateSource(candidate),
     sourceBucket: candidate.bucket,
@@ -838,6 +908,8 @@ function toTradingCandidate(
     isActiveToday: freshness.isActiveToday,
     ...signalQuality,
     ...narrative,
+    discoveryScore,
+    triggerVerificationState,
   };
 }
 
@@ -932,6 +1004,8 @@ function toPersistedCandidate(snapshot: RunnerCaseSnapshot, change?: string): Tr
     repricingProbability: 0,
     marketAttentionShift: 0,
     hasFreshFundamentalCatalyst: false,
+    discoveryScore: Math.max(0, Math.min(45, Math.round(snapshot.score * 0.45))),
+    triggerVerificationState: "PRICE_ONLY",
   };
 }
 
@@ -1197,6 +1271,12 @@ function priorityStateFor(input: {
       if (candidate.freshnessStatus === "recentMemory" && (candidate.continuation < 45 || candidate.rvol < 1.2)) return "DEAD";
       return "LOW_PRIORITY";
     }
+    if (
+      candidate.triggerVerificationState === "PRICE_ONLY" &&
+      candidate.narrativeTriggerType === "UNKNOWN" &&
+      candidate.rvol < 2.8 &&
+      candidate.continuation < 78
+    ) return "LOW_PRIORITY";
     const majorAcceleration =
       candidate.action === "Agera" &&
       candidate.continuation >= 70 &&
@@ -1206,6 +1286,13 @@ function priorityStateFor(input: {
       candidate.confirmationCount >= 3 &&
       candidate.sourceBucket !== "PARABOLIC_WATCH";
     if (majorAcceleration) return "MUST_ACT";
+    if (
+      candidate.triggerVerificationState === "VERIFIED" &&
+      candidate.discoveryScore >= 72 &&
+      candidate.repricingProbability >= 58 &&
+      candidate.risk < 78 &&
+      candidate.decayScore < 45
+    ) return candidate.continuation >= 62 || candidate.rvol >= 1.35 ? "WATCH_CLOSELY" : "REENTRY_WATCH";
     if (
       candidate.hasFreshFundamentalCatalyst &&
       candidate.narrativeStrength >= 72 &&
@@ -1265,6 +1352,12 @@ function priorityWhy(state: PriorityState, item: TrackedTicker, position?: Posit
       return `${candidate.ticker} är ${candidate.freshnessStatus}. Ingen MUST_ACT utan färsk same-day livebekräftelse. ${candidate.needsNow}`;
     }
     if (candidate.staleReason) return candidate.staleReason;
+    if (candidate.triggerVerificationState === "PRICE_ONLY" && candidate.narrativeTriggerType === "UNKNOWN" && candidate.rvol < 2.8) {
+      return `Okänd story/PRICE ONLY. Behöver starkare RVOL eller verifierad trigger innan den prioriteras högre. Discovery ${candidate.discoveryScore}/100.`;
+    }
+    if (candidate.triggerVerificationState === "VERIFIED" && candidate.discoveryScore >= 70) {
+      return `Verifierad discovery/repricing: ${candidate.narrativeTriggerType}. Discovery ${candidate.discoveryScore}/100. ${candidate.catalystSummary}`;
+    }
     if (candidate.narrativeTriggerType !== "UNKNOWN" && candidate.narrativeStrength >= 55) {
       return `WHY NOW: ${candidate.narrativeTriggerType}. Narrative ${candidate.narrativeStrength}/100, repricing ${candidate.repricingProbability}/100. ${candidate.catalystSummary}`;
     }
@@ -1290,8 +1383,18 @@ function priorityUrgency(state: PriorityState, position?: PositionManagementDeci
   const candidateBoost = candidate
     ? Math.min(12, Math.max(0, candidate.continuation - 65) / 2) + Math.min(8, Math.max(0, candidate.rvol - 1.5) * 4)
     : 0;
+  const discoveryBoost = candidate
+    ? Math.round(candidate.discoveryScore * 0.18) +
+      (candidate.triggerVerificationState === "VERIFIED"
+        ? 10
+        : candidate.triggerVerificationState === "THEMATIC"
+          ? 5
+          : candidate.triggerVerificationState === "PRICE_ONLY" && candidate.rvol < 2.8
+            ? -12
+            : 0)
+    : 0;
   const trendBoost = position?.confidenceTrend === "up" ? 5 : position?.confidenceTrend === "down" ? -6 : 0;
-  return Math.max(0, Math.min(100, Math.round(base[state] + candidateBoost + trendBoost)));
+  return Math.max(0, Math.min(100, Math.round(base[state] + candidateBoost + discoveryBoost + trendBoost)));
 }
 
 function buildPriorityBoard(input: {
@@ -1332,6 +1435,8 @@ function buildPriorityBoard(input: {
         signalQuality: candidate?.signalQuality,
         narrativeTriggerType: candidate?.narrativeTriggerType,
         narrativeStrength: candidate?.narrativeStrength,
+        discoveryScore: candidate?.discoveryScore,
+        triggerVerificationState: candidate?.triggerVerificationState,
         freshnessMinutes: candidate?.freshnessMinutes ?? 24 * 60,
         lastConfirmedAt: candidate?.lastConfirmedAt ?? null,
         changedFrom: change?.changeType ?? position?.state ?? item.lastKnownState ?? null,
@@ -1388,6 +1493,7 @@ function buildEarlyRadar(input: {
         : isFreshTrigger
           ? "PREOPEN_WATCH"
           : "OPEN_CONFIRMATION_NEEDED",
+      triggerVerificationState: trigger.triggerVerificationState,
     });
   }
   for (const candidate of input.candidates) {
@@ -1417,6 +1523,7 @@ function buildEarlyRadar(input: {
       priorityScore,
       source: existing ? "hybrid" : "candidate",
       status: candidate.isActiveToday ? "ACTIVE_CONFIRMED" : "OPEN_CONFIRMATION_NEEDED",
+      triggerVerificationState: candidate.triggerVerificationState,
     });
   }
   for (const tracked of input.trackedUniverse) {
@@ -1439,6 +1546,7 @@ function buildEarlyRadar(input: {
       priorityScore: 48,
       source: "trackedMemory",
       status: "OPEN_CONFIRMATION_NEEDED",
+      triggerVerificationState: "UNVERIFIED",
     });
   }
   return [...items.values()]
@@ -1532,6 +1640,7 @@ export async function buildCanonicalTradingSnapshot(): Promise<CanonicalTradingS
       lastFetchAt: new Date().toISOString(),
       error: "news ingestion failed",
       headlineCount: 0,
+      feedHealth: [],
       generatedAt: new Date().toISOString(),
       headlines: [],
     })),
@@ -1665,6 +1774,7 @@ export async function buildCanonicalTradingSnapshot(): Promise<CanonicalTradingS
       lastFetchAt: newsIngestion.lastFetchAt,
       error: newsIngestion.error,
       headlineCount: newsIngestion.headlineCount,
+      feedHealth: newsIngestion.feedHealth,
     },
     whatChanged: (changesResult?.changes ?? []).slice(0, 8),
     marketPulse: buildMarketPulse(candidates, computedMarketQuality),

@@ -46,6 +46,8 @@ interface TradingCandidate {
   repricingProbability?: number;
   marketAttentionShift?: number;
   hasFreshFundamentalCatalyst?: boolean;
+  discoveryScore?: number;
+  triggerVerificationState?: "VERIFIED" | "UNVERIFIED" | "PRICE_ONLY" | "THEMATIC";
 }
 
 interface CanonicalTradingSnapshot {
@@ -80,6 +82,15 @@ interface CanonicalTradingSnapshot {
     lastFetchAt: string;
     error: string | null;
     headlineCount: number;
+    feedHealth: Array<{
+      url: string;
+      source: string;
+      health: "HEALTHY" | "STALE" | "ERROR" | "EMPTY";
+      statusCode?: number;
+      headlineCount: number;
+      latestPublishedAt?: string;
+      error?: string;
+    }>;
   };
   whatChanged: Array<{
     ticker: string;
@@ -143,6 +154,8 @@ interface CanonicalTradingSnapshot {
     changedFrom?: string | null;
     changedAt?: string | null;
     expiresSoon: boolean;
+    discoveryScore?: number;
+    triggerVerificationState?: "VERIFIED" | "UNVERIFIED" | "PRICE_ONLY" | "THEMATIC";
   }>;
   newsTriggers: Array<{
     id: string;
@@ -159,6 +172,7 @@ interface CanonicalTradingSnapshot {
     marketCapSensitivity: number;
     secondDerivativeScore: number;
     repricingPotential: number;
+    triggerVerificationState: "VERIFIED" | "UNVERIFIED" | "PRICE_ONLY" | "THEMATIC";
     summary: string;
   }>;
   earlyRadar: Array<{
@@ -177,6 +191,7 @@ interface CanonicalTradingSnapshot {
     priorityScore: number;
     source: "newsTrigger" | "trackedMemory" | "candidate" | "hybrid";
     status: "PREOPEN_WATCH" | "OPEN_CONFIRMATION_NEEDED" | "ACTIVE_CONFIRMED" | "REJECTED";
+    triggerVerificationState: "VERIFIED" | "UNVERIFIED" | "PRICE_ONLY" | "THEMATIC";
   }>;
   breadth: {
     hot: TradingCandidate[];
@@ -313,6 +328,20 @@ function newsModeLabel(mode: string, isLive: boolean) {
   if (mode === "disabled") return "DISABLED";
   if (mode === "rss") return "RSS ERROR";
   return mode.toUpperCase();
+}
+
+function verificationLabel(value?: string) {
+  if (value === "VERIFIED") return "VERIFIED";
+  if (value === "PRICE_ONLY") return "PRICE ONLY";
+  if (value === "THEMATIC") return "THEMATIC";
+  return "UNVERIFIED";
+}
+
+function verificationClass(value?: string) {
+  if (value === "VERIFIED") return "border-emerald-700/60 bg-emerald-950/30 text-emerald-100";
+  if (value === "THEMATIC") return "border-cyan-700/60 bg-cyan-950/30 text-cyan-100";
+  if (value === "PRICE_ONLY") return "border-amber-700/60 bg-amber-950/30 text-amber-100";
+  return "border-zinc-700 bg-zinc-900 text-zinc-300";
 }
 
 function narrativeLabel(type?: string) {
@@ -1014,7 +1043,10 @@ export function TerminalV2Shell() {
                   <div>
                     <div className="text-zinc-200">{item.action}</div>
                     <div className="line-clamp-1 text-xs text-zinc-500">
-                      {signalFreshnessLabel(item.signalQuality)} · {narrativeLabel(item.narrativeTriggerType)} · {item.freshnessMinutes}m sedan bekräftelse
+                      <span className={`mr-1 rounded border px-1.5 py-0.5 text-[9px] ${verificationClass(item.triggerVerificationState)}`}>
+                        {verificationLabel(item.triggerVerificationState)}
+                      </span>
+                      {signalFreshnessLabel(item.signalQuality)} · {narrativeLabel(item.narrativeTriggerType)} · discovery {item.discoveryScore ?? "-"} · {item.freshnessMinutes}m sedan bekräftelse
                     </div>
                   </div>
                   <div className="text-xs text-zinc-500">
@@ -1046,7 +1078,12 @@ export function TerminalV2Shell() {
                   </div>
                   <div>
                     <div className="text-zinc-200">{narrativeLabel(item.narrativeTriggerType)}</div>
-                    <div className="line-clamp-1 text-xs text-zinc-500">{item.preOpenTrigger}</div>
+                    <div className="line-clamp-1 text-xs text-zinc-500">
+                      <span className={`mr-1 rounded border px-1.5 py-0.5 text-[9px] ${verificationClass(item.triggerVerificationState)}`}>
+                        {verificationLabel(item.triggerVerificationState)}
+                      </span>
+                      {item.preOpenTrigger}
+                    </div>
                   </div>
                   <div className="line-clamp-2 text-xs text-zinc-400">{item.confirmationNeeded}</div>
                   <div className="text-xs text-zinc-500">{item.priorityScore}/100</div>
@@ -1068,6 +1105,26 @@ export function TerminalV2Shell() {
             {!snapshot.newsProviderStatus.isConfigured ? <span className="text-amber-200">News provider not configured</span> : null}
             {snapshot.newsProviderStatus.error ? <span className="text-rose-300">Fel: {snapshot.newsProviderStatus.error}</span> : null}
           </div>
+          {snapshot.newsProviderStatus.feedHealth?.length > 0 ? (
+            <div className="mb-3 flex flex-wrap gap-2 text-[11px] text-zinc-500">
+              {snapshot.newsProviderStatus.feedHealth.slice(0, 4).map((feed) => (
+                <span
+                  key={`${feed.source}-${feed.health}-${feed.statusCode ?? "ok"}`}
+                  className={`rounded border px-2 py-0.5 ${
+                    feed.health === "HEALTHY"
+                      ? "border-emerald-800 bg-emerald-950/20 text-emerald-200"
+                      : feed.health === "STALE"
+                        ? "border-amber-800 bg-amber-950/20 text-amber-200"
+                        : feed.health === "EMPTY"
+                          ? "border-zinc-700 bg-zinc-900 text-zinc-300"
+                          : "border-rose-800 bg-rose-950/20 text-rose-200"
+                  }`}
+                >
+                  {feed.source}: {feed.health} · {feed.headlineCount} hits{feed.statusCode ? ` · ${feed.statusCode}` : ""}
+                </span>
+              ))}
+            </div>
+          ) : null}
           {snapshot.newsTriggers.length > 0 ? (
             <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-5">
               {snapshot.newsTriggers.slice(0, 5).map((item) => item.ticker ? (
@@ -1088,6 +1145,9 @@ export function TerminalV2Shell() {
                   </div>
                   <p className="mt-2 line-clamp-2 text-xs leading-5 text-zinc-300">{item.headline}</p>
                   <p className="mt-2 text-[11px] text-zinc-500">
+                    <span className={`mr-1 rounded border px-1.5 py-0.5 text-[9px] ${verificationClass(item.triggerVerificationState)}`}>
+                      {verificationLabel(item.triggerVerificationState)}
+                    </span>
                     {item.source} · {ageMinutes(item.publishedAt)} · styrka {item.triggerStrength}/100 · repricing {item.repricingPotential}/100
                   </p>
                 </button>
@@ -1101,7 +1161,12 @@ export function TerminalV2Shell() {
                     <span className="rounded border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[10px] text-zinc-400">{item.triggerType}</span>
                   </div>
                   <p className="mt-2 line-clamp-2 text-xs leading-5 text-zinc-400">{item.headline}</p>
-                  <p className="mt-2 text-[11px] text-zinc-600">{item.source} · {ageMinutes(item.publishedAt)}</p>
+                  <p className="mt-2 text-[11px] text-zinc-600">
+                    <span className={`mr-1 rounded border px-1.5 py-0.5 text-[9px] ${verificationClass(item.triggerVerificationState)}`}>
+                      {verificationLabel(item.triggerVerificationState)}
+                    </span>
+                    {item.source} · {ageMinutes(item.publishedAt)}
+                  </p>
                 </div>
               ))}
             </div>

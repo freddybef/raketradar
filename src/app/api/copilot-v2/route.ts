@@ -42,6 +42,8 @@ interface TradingCandidate {
   repricingProbability?: number;
   marketAttentionShift?: number;
   hasFreshFundamentalCatalyst?: boolean;
+  discoveryScore?: number;
+  triggerVerificationState?: "VERIFIED" | "UNVERIFIED" | "PRICE_ONLY" | "THEMATIC";
 }
 
 interface CanonicalTradingSnapshot {
@@ -69,6 +71,15 @@ interface CanonicalTradingSnapshot {
     lastFetchAt: string;
     error: string | null;
     headlineCount: number;
+    feedHealth?: Array<{
+      url: string;
+      source: string;
+      health: "HEALTHY" | "STALE" | "ERROR" | "EMPTY";
+      statusCode?: number;
+      headlineCount: number;
+      latestPublishedAt?: string;
+      error?: string;
+    }>;
   };
   candidates: TradingCandidate[];
   topFocus: TradingCandidate[];
@@ -145,6 +156,8 @@ interface PriorityItem {
   changedFrom?: string | null;
   changedAt?: string | null;
   expiresSoon: boolean;
+  discoveryScore?: number;
+  triggerVerificationState?: "VERIFIED" | "UNVERIFIED" | "PRICE_ONLY" | "THEMATIC";
 }
 
 interface NewsTrigger {
@@ -162,6 +175,7 @@ interface NewsTrigger {
   marketCapSensitivity: number;
   secondDerivativeScore: number;
   repricingPotential: number;
+  triggerVerificationState: "VERIFIED" | "UNVERIFIED" | "PRICE_ONLY" | "THEMATIC";
   summary: string;
 }
 
@@ -181,6 +195,7 @@ interface EarlyRadarItem {
   priorityScore: number;
   source: string;
   status: string;
+  triggerVerificationState?: "VERIFIED" | "UNVERIFIED" | "PRICE_ONLY" | "THEMATIC";
 }
 
 const COPILOT_V2_MODEL = process.env.OPENAI_MODEL ?? "gpt-4.1-mini";
@@ -408,7 +423,7 @@ function fallbackAnswer(input: {
   const lowerMessage = input.message.toLowerCase();
   const comparisonMode = /jämför|jamfor|vilken|bäst|bast|starkast|mest intressant/.test(lowerMessage);
   const positionMode = /äger|ager|innehav|position|håller|haller|trimma|sälja|salja|stop|add|öka|oka|minska|alive|fortfarande/.test(lowerMessage);
-  const priorityMode = /fokus|plan|spelar roll|prioritet|prioritera|ignorer|undvik|dött|dott|dog|dead|ändrat|andrat|changed/.test(lowerMessage);
+  const priorityMode = /fokus|plan|spelar roll|prioritet|prioritera|mest intressant|ignorer|undvik|dött|dott|dog|dead|ändrat|andrat|changed/.test(lowerMessage);
   const candidate = mentionedTicker(input.message, input.snapshot);
   const tracked = mentionedTracked(input.message, input.snapshot);
   const position = input.snapshot.positionManagement?.find((item) => item.ticker === candidate?.candidate.ticker || item.ticker === tracked?.item.ticker);
@@ -474,6 +489,8 @@ function compactCandidate(candidate: TradingCandidate) {
     repricingProbability: candidate.repricingProbability,
     marketAttentionShift: candidate.marketAttentionShift,
     hasFreshFundamentalCatalyst: candidate.hasFreshFundamentalCatalyst,
+    discoveryScore: candidate.discoveryScore,
+    triggerVerificationState: candidate.triggerVerificationState,
     catalystType: candidate.catalystType,
     catalystScore: candidate.catalystScore,
     catalystSummary: candidate.catalystSummary,
@@ -542,6 +559,8 @@ function buildSystemPrompt() {
     "Vid frågor som varför går den, vad är storyn, är detta bara squeeze: börja med narrativeTriggerType, narrativeStrength, repricingProbability och hasFreshFundamentalCatalyst före RVOL/momentum.",
     "Om newsTriggers finns för tickern eller frågan gäller dagens triggers/PM/rubriker: använd newsTriggers först, sedan price/volume.",
     "Om newsProviderStatus.isLive är false måste du tydligt säga att nyhetsdatan är mock/manual/disabled och inte riktig live news coverage ännu. Om isLive är true får du säga baserat på live RSS/API-feed.",
+    "Vid breda frågor som vad är mest intressant idag ska VERIFIED discovery/repricing och färsk fundamental trigger prioriteras före svag continuation med okänd story.",
+    "PRICE_ONLY/okänd story ska nedviktas om RVOL inte är extrem. Säg att det är prisrörelse utan verifierad trigger, inte fundamental discovery.",
     "Om ticker finns i trackedUniverse men inte i aktiva candidates: säg att den är tracked men inte aktiv toppkandidat just nu. Säg aldrig 'no data' för tracked tickers.",
     "Tracked tickers kan sakna färsk livebekräftelse. Då är beslutet bevaka/re-check, inte att caset är okänt.",
     "Vid breda frågor som vad ska jag fokusera på, vad spelar roll nu, vad ignorerar jag eller vad har dött: prioritera priorityBoard framför långa kandidatlistor.",
@@ -754,7 +773,7 @@ function priorityQuestionAnswer(message: string, snapshot: CanonicalTradingSnaps
   return [
     `Beslut: ${top[0]?.ticker ?? "inget"} är högsta prioritet i priorityBoard.`,
     snapshot.isFreshForToday ? "Freshness: dagens livebekräftelse." : `Freshness: inte dagens live-action. Visar ${snapshot.marketSessionPhase ?? "market memory"} / recent context.`,
-    ...top.map((item) => `${item.ticker}: ${item.priorityState} (${item.signalQuality ?? "WATCH"}, ${item.narrativeTriggerType ?? "UNKNOWN"}, ${item.freshnessMinutes ?? "-"}m) - ${item.action}. ${item.whyNow}`),
+    ...top.map((item) => `${item.ticker}: ${item.priorityState} (${item.triggerVerificationState ?? "UNVERIFIED"}, discovery ${item.discoveryScore ?? "-"}, ${item.narrativeTriggerType ?? "UNKNOWN"}, ${item.freshnessMinutes ?? "-"}m) - ${item.action}. ${item.whyNow}`),
     "Ignorera resten tills de får ny urgency eller state-ändring.",
   ].join("\n");
 }
