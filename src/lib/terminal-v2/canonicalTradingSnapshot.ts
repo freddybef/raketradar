@@ -1027,6 +1027,8 @@ function toPersistedCandidate(snapshot: RunnerCaseSnapshot, change?: string): Tr
   const continuation = numberFromPayload(live, "continuationProbability");
   const fade = numberFromPayload(live, "fadeProbability", snapshot.risk);
   const label = String(live.label ?? snapshot.state ?? "WATCH");
+  const confirmedAt = snapshot.createdAt ?? null;
+  const age = confirmedAt ? minutesAge(new Date(), new Date(confirmedAt)) : 24 * 60;
   const sourceBucket: DiscoveryBucket =
     movePct > 20 && continuation >= 65 && fade >= 55
       ? "PARABOLIC_WATCH"
@@ -1088,12 +1090,12 @@ function toPersistedCandidate(snapshot: RunnerCaseSnapshot, change?: string): Tr
     catalystScore: 30,
     catalystSummary: "Ingen tydlig färsk catalyst i tavlan; caset kräver ny volym/aggression för att bli relevant igen.",
     freshnessStatus: "recentMemory",
-    dataAgeMinutes: 24 * 60,
+    dataAgeMinutes: age,
     isActiveToday: false,
     firstSeenAt: null,
-    lastConfirmedAt: null,
-    freshnessMinutes: 24 * 60,
-    momentumAge: 24 * 60,
+    lastConfirmedAt: confirmedAt,
+    freshnessMinutes: age,
+    momentumAge: age,
     confirmationCount: 0,
     lastExpansionAt: null,
     decayScore: 70,
