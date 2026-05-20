@@ -1,3 +1,5 @@
+import { getSwedishEquityUniverse } from "@/lib/market/swedishEquityUniverse";
+
 export type HeadlineTriggerType =
   | "REPORT"
   | "ORDER_CONTRACT"
@@ -60,6 +62,7 @@ export interface NewsTrigger {
 }
 
 const MANUAL_COMPANY_ALIASES: Array<{ pattern: RegExp; ticker: string; company: string; marketCapSensitivity: number }> = [
+  { pattern: /\bsurgical science\b|\bsurgical science sweden\b/i, ticker: "SUS", company: "Surgical Science Sweden AB", marketCapSensitivity: 72 },
   { pattern: /\bdiamyd\b/i, ticker: "DMYD B", company: "Diamyd Medical", marketCapSensitivity: 74 },
   { pattern: /\bapr technologies\b|\bapr\b/i, ticker: "APR", company: "APR Technologies", marketCapSensitivity: 78 },
   { pattern: /\bredsense\b/i, ticker: "REDS", company: "Redsense Medical", marketCapSensitivity: 82 },
@@ -392,4 +395,3 @@ export function parseNewsTriggers(rawHeadlines: Array<string | RawHeadlineInput>
     .filter(isTradableNordicTrigger)
     .sort((a, b) => b.repricingPotential - a.repricingPotential || b.triggerStrength - a.triggerStrength);
 }
-import { getSwedishEquityUniverse } from "@/lib/market/swedishEquityUniverse";
