@@ -14,7 +14,7 @@ export type TriggerType =
   | "uppköpsrykte"
   | "strategisk översyn"
   | "myndighetsbesked"
-  | "AI/datacenter/försvar/cyber/biotech themes"
+  | "AI/datacenter/försvar/cyber themes"
   | "vd-byte"
   | "rapport"
   | "riktkurshöjning"
@@ -156,8 +156,8 @@ const rules: TriggerRule[] = [
     decayHours: 120,
   },
   {
-    type: "AI/datacenter/försvar/cyber/biotech themes",
-    keywords: ["ai", "artificiell intelligens", "datacenter", "försvar", "cyber", "nato", "biotech", "medtech"],
+    type: "AI/datacenter/försvar/cyber themes",
+    keywords: ["ai", "artificiell intelligens", "datacenter", "försvar", "cyber", "nato"],
     impactScore: 72,
     confidence: 66,
     direction: "bullish",
