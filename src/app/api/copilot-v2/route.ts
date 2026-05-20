@@ -16,6 +16,8 @@ interface TradingCandidate {
   risk?: number;
   rvol?: number;
   movePct?: number;
+  dayChangePct?: number;
+  intradayMomentumPct?: number;
   whyNow?: string;
   needsNow?: string;
   personality?: string;
@@ -124,6 +126,8 @@ interface TrackedTicker {
   livePrice?: number | null;
   liveVolume?: number | null;
   liveRvol?: number | null;
+  liveDayChangePct?: number | null;
+  liveIntradayMomentumPct?: number | null;
   liveAsOf?: string | null;
   providerAttempts?: Array<{
     symbol: string;
@@ -384,7 +388,7 @@ function trackedAnswer(item: TrackedTicker) {
   const availabilityLine = `Quote: ${item.quoteStatus ?? "okänd"}. Volym: ${item.volumeStatus ?? "okänd"}. RVOL: ${item.rvolStatus ?? "okänd"}.`;
   const liveLine =
     item.liveDataStatus === "fresh"
-      ? `Live data: färsk quote/volym/RVOL finns${item.workingAlias ? ` via ${item.workingAlias}` : ""}. Pris ${item.livePrice ?? "okänt"}, volym ${item.liveVolume ?? "okänd"}, RVOL ${item.liveRvol ?? "okänd"}${item.liveAsOf ? `, asOf ${item.liveAsOf}` : ""}. Ingen aktiv top setup om den inte finns i Live Edge Board.`
+      ? `Live data: färsk quote/volym/RVOL finns${item.workingAlias ? ` via ${item.workingAlias}` : ""}. Pris ${item.livePrice ?? "okänt"}, Day ${item.liveDayChangePct ?? "okänd"}%, Intraday ${item.liveIntradayMomentumPct ?? "okänd"}%, volym ${item.liveVolume ?? "okänd"}, RVOL ${item.liveRvol ?? "okänd"}${item.liveAsOf ? `, asOf ${item.liveAsOf}` : ""}. Ingen aktiv top setup om den inte finns i Live Edge Board.`
       : item.liveDataStatus === "missing"
       ? `Live data: saknas. Orsak: ${item.liveDataMissingReason ?? "okänd provider-orsak"}. Försökta symboler: ${(item.attemptedSymbols ?? []).slice(0, 6).join(", ") || "inga"}.`
       : item.liveDataStatus === "memory_only"
@@ -441,6 +445,8 @@ function compareTracked(items: Array<TradingCandidate | TrackedTicker>) {
 
 function candidateAnswer(candidate: TradingCandidate, stale = false) {
   const staleLine = stale ? "\n\nObs: svaret bygger på senaste snapshot som klienten skickade in." : "";
+  const dayMove = candidate.dayChangePct ?? candidate.movePct ?? "okänd";
+  const intradayMove = candidate.intradayMomentumPct ?? candidate.movePct ?? "okänd";
   const freshnessLine = candidate.isActiveToday
     ? "Freshness: active today med same-day livebekräftelse."
     : `Freshness: ${candidate.freshnessStatus ?? "okänd"}. Behandla som context/re-entry, inte dagens action utan ny bekräftelse.`;
@@ -455,6 +461,7 @@ function candidateAnswer(candidate: TradingCandidate, stale = false) {
     `Bedömning: ${candidate.ticker} är ${candidate.action.toLowerCase()} i senaste snapshot, inte ett coverage gap.`,
     freshnessLine,
     `Story: ${candidate.narrativeTriggerType ?? "UNKNOWN"} · narrative ${candidate.narrativeStrength ?? 0}/100 · repricing ${candidate.repricingProbability ?? 0}/100${candidate.hasFreshFundamentalCatalyst ? " · färsk fundamental catalyst" : ""}.`,
+    `Move: Day ${dayMove}% (broker/reference close) · Intraday ${intradayMove}% (första intraday expansion) · RVOL ${candidate.rvol ?? "okänd"}x.`,
     `Signal quality: ${candidate.signalQuality ?? "okänd"} · decay ${candidate.decayScore ?? 0}/100 · confirmations ${candidate.confirmationCount ?? 0}.`,
     candidate.staleReason ? `Stale/decay: ${candidate.staleReason}.` : `Senast bekräftad: ${candidate.lastConfirmedAt ?? "okänd"}.`,
     `Tone: ${tone}`,
@@ -525,6 +532,8 @@ function compactCandidate(candidate: TradingCandidate) {
     risk: candidate.risk,
     rvol: candidate.rvol,
     movePct: candidate.movePct,
+    dayChangePct: candidate.dayChangePct,
+    intradayMomentumPct: candidate.intradayMomentumPct,
     sourceBucket: candidate.sourceBucket,
     freshnessStatus: candidate.freshnessStatus,
     dataAgeMinutes: candidate.dataAgeMinutes,
@@ -593,6 +602,8 @@ function compactSnapshot(snapshot: CanonicalTradingSnapshot) {
       livePrice: item.livePrice,
       liveVolume: item.liveVolume,
       liveRvol: item.liveRvol,
+      liveDayChangePct: item.liveDayChangePct,
+      liveIntradayMomentumPct: item.liveIntradayMomentumPct,
       liveAsOf: item.liveAsOf,
       workingAlias: item.workingAlias,
       quoteStatus: item.quoteStatus,

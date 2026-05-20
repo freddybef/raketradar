@@ -18,6 +18,8 @@ interface TradingCandidate {
   risk: number;
   rvol: number;
   movePct: number;
+  dayChangePct?: number;
+  intradayMomentumPct?: number;
   source: string;
   sourceBucket: string;
   changed?: string | null;
@@ -394,6 +396,8 @@ function CandidateDetails({ candidate }: { candidate: TradingCandidate }) {
 }
 
 function EdgeRow({ candidate, onOpen }: { candidate: TradingCandidate; onOpen: (candidate: TradingCandidate) => void }) {
+  const dayMove = candidate.dayChangePct ?? candidate.movePct;
+  const intradayMove = candidate.intradayMomentumPct ?? candidate.movePct;
   return (
     <button
       type="button"
@@ -426,8 +430,8 @@ function EdgeRow({ candidate, onOpen }: { candidate: TradingCandidate; onOpen: (
           <div className="text-sm font-semibold text-zinc-100">{pct(candidate.risk)}</div>
         </div>
         <div>
-          <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">Move / RVOL</div>
-          <div className="text-sm font-semibold text-zinc-100">{num(candidate.movePct, 2)}% / {num(candidate.rvol, 2)}x</div>
+          <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">Day / Intraday / RVOL</div>
+          <div className="text-sm font-semibold text-zinc-100">{num(dayMove, 2)}% / {num(intradayMove, 2)}% / {num(candidate.rvol, 2)}x</div>
         </div>
       </div>
     </button>
@@ -444,6 +448,8 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 }
 
 function MiniCase({ candidate, onOpen }: { candidate: TradingCandidate; onOpen: (candidate: TradingCandidate) => void }) {
+  const dayMove = candidate.dayChangePct ?? candidate.movePct;
+  const intradayMove = candidate.intradayMomentumPct ?? candidate.movePct;
   return (
     <button
       type="button"
@@ -454,7 +460,7 @@ function MiniCase({ candidate, onOpen }: { candidate: TradingCandidate; onOpen: 
         <span className="font-semibold text-zinc-100">{candidate.ticker}</span>
         <span className={`rounded border px-2 py-0.5 text-[10px] ${badgeClass(candidate.action)}`}>{candidate.action}</span>
       </div>
-      <div className="mt-1 text-xs text-zinc-500">{candidate.setupType} · {num(candidate.movePct, 2)}% · {num(candidate.rvol, 2)}x</div>
+      <div className="mt-1 text-xs text-zinc-500">{candidate.setupType} · Day {num(dayMove, 2)}% · Intraday {num(intradayMove, 2)}% · {num(candidate.rvol, 2)}x</div>
       <div className="mt-1 text-[11px] text-violet-200">{catalystLabel(candidate.catalystType)} · {candidate.catalystScore ?? 0}/100</div>
       <p className="mt-2 line-clamp-2 text-zinc-300">{candidate.needsNow ?? candidate.thesis}</p>
     </button>
@@ -767,6 +773,8 @@ function matchedCandidateForNews(snapshot: CanonicalTradingSnapshot, item: NewsT
 }
 
 function CaseDrawer({ candidate, onClose }: { candidate: TradingCandidate; onClose: () => void }) {
+  const dayMove = candidate.dayChangePct ?? candidate.movePct;
+  const intradayMove = candidate.intradayMomentumPct ?? candidate.movePct;
   return (
     <div className="fixed inset-0 z-50 bg-black/70 p-3 md:p-6" onClick={onClose}>
       <div
@@ -789,7 +797,7 @@ function CaseDrawer({ candidate, onClose }: { candidate: TradingCandidate; onClo
           </button>
         </div>
 
-        <div className="mt-4 grid gap-3 md:grid-cols-4">
+        <div className="mt-4 grid gap-3 md:grid-cols-5">
           <div className="rounded border border-zinc-800 p-3">
             <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">Continuation</div>
             <div className="mt-1 text-xl font-semibold">{pct(candidate.continuation)}</div>
@@ -799,8 +807,12 @@ function CaseDrawer({ candidate, onClose }: { candidate: TradingCandidate; onClo
             <div className="mt-1 text-xl font-semibold">{pct(candidate.risk)}</div>
           </div>
           <div className="rounded border border-zinc-800 p-3">
-            <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">Move</div>
-            <div className="mt-1 text-xl font-semibold">{num(candidate.movePct, 2)}%</div>
+            <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">Day</div>
+            <div className="mt-1 text-xl font-semibold">{num(dayMove, 2)}%</div>
+          </div>
+          <div className="rounded border border-zinc-800 p-3">
+            <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">Intraday</div>
+            <div className="mt-1 text-xl font-semibold">{num(intradayMove, 2)}%</div>
           </div>
           <div className="rounded border border-zinc-800 p-3">
             <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">RVOL</div>

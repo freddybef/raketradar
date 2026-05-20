@@ -4,6 +4,10 @@ import type { LiveMarketBar, LiveMarketReactionProvider } from "@/lib/intelligen
 type YahooChartResponse = {
   chart?: {
     result?: Array<{
+      meta?: {
+        chartPreviousClose?: number;
+        previousClose?: number;
+      };
       timestamp?: number[];
       indicators?: {
         quote?: Array<{
@@ -260,6 +264,7 @@ function toBars(payload: YahooChartResponse): LiveMarketBar[] {
   const result = payload.chart?.result?.[0];
   const timestamps = result?.timestamp ?? [];
   const quote = result?.indicators?.quote?.[0];
+  const referencePreviousClose = result?.meta?.chartPreviousClose ?? result?.meta?.previousClose;
   if (!quote) return [];
 
   return timestamps.flatMap((timestamp, index) => {
@@ -277,6 +282,7 @@ function toBars(payload: YahooChartResponse): LiveMarketBar[] {
       low,
       close,
       volume: quote.volume?.[index] ?? 0,
+      referencePreviousClose,
     };
   });
 }

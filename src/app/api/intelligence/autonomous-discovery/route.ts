@@ -65,7 +65,8 @@ async function loadPersistedDiscoveryFallback(): Promise<DiscoveryPayload | null
         const fade = Number(live.fadeProbability ?? snapshot.risk ?? 0);
         const continuation = Number(live.continuationProbability ?? 0);
         const rvol = Number(live.relativeVolume ?? 0);
-        const momentum = Number(live.intradayMomentum ?? 0);
+        const momentum = Number(live.intradayMomentumPct ?? live.intradayMomentum ?? 0);
+        const dayChangePct = Number(live.dayChangePct ?? momentum);
         const label = String(live.label ?? "DEAD_BOUNCE");
         const bucket = momentum > 20 && rvol >= 1.5 && continuation >= 70 && fade >= 60
           ? "PARABOLIC_WATCH"
@@ -110,6 +111,8 @@ async function loadPersistedDiscoveryFallback(): Promise<DiscoveryPayload | null
             asOf: new Date().toISOString(),
             price: Number(live.price ?? 0),
             volume: Number(live.volume ?? 0),
+            dayChangePct,
+            intradayMomentumPct: momentum,
             intradayMomentum: momentum,
             relativeVolume: rvol,
             gapPercent: Number(live.gapPercent ?? 0),

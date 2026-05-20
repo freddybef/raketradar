@@ -22,6 +22,7 @@ export interface LiveMarketBar {
   low: number;
   close: number;
   volume: number;
+  referencePreviousClose?: number;
 }
 
 export interface LiveMarketReaction {
@@ -31,6 +32,8 @@ export interface LiveMarketReaction {
   asOf: string;
   price: number;
   volume: number;
+  dayChangePct: number;
+  intradayMomentumPct: number;
   intradayMomentum: number;
   relativeVolume: number;
   gapPercent: number;
@@ -135,7 +138,7 @@ export async function calculateLiveMarketReactions(input: {
       const latest = hasIntraday ? intraday.at(-1) : daily.at(-1);
       const previous = hasIntraday ? intraday.at(-2) : daily.at(-2);
       if (!first || !latest || !previous) return null;
-      const previousClose = daily.at(-2)?.close ?? first.open;
+      const previousClose = first.referencePreviousClose ?? daily.at(-2)?.close ?? first.open;
       if (!latest || !previous) return null;
 
       const intradayVolume = hasIntraday ? intraday.reduce((sum, bar) => sum + (bar.volume ?? 0), 0) : (latest.volume ?? 0);
@@ -144,6 +147,7 @@ export async function calculateLiveMarketReactions(input: {
       const activeBars = hasIntraday ? intraday : [latest];
       const currentRange = Math.abs(pct(first.open, Math.max(...activeBars.map((bar) => bar.high))));
       const momentum = pct(first.open, latest.close);
+      const dayChangePct = pct(previousClose, latest.close);
       const gapPercent = pct(previousClose, first.open);
       const acceleration = pct(previous.close, latest.close);
       const rvol = avgDailyVolume5 > 0 ? intradayVolume / avgDailyVolume5 : 0;
@@ -210,6 +214,8 @@ export async function calculateLiveMarketReactions(input: {
         asOf: latest.timestamp,
         price: latest.close,
         volume: Math.round(intradayVolume),
+        dayChangePct: Number(dayChangePct.toFixed(2)),
+        intradayMomentumPct: Number(momentum.toFixed(2)),
         intradayMomentum: Number(momentum.toFixed(2)),
         relativeVolume: Number(rvol.toFixed(2)),
         gapPercent: Number(gapPercent.toFixed(2)),

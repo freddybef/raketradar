@@ -37,6 +37,8 @@ export interface TradingCandidate {
   risk: number;
   rvol: number;
   movePct: number;
+  dayChangePct: number;
+  intradayMomentumPct: number;
   score: number;
   confidence: number;
   source: string;
@@ -111,6 +113,8 @@ export interface TrackedTicker {
   livePrice?: number | null;
   liveVolume?: number | null;
   liveRvol?: number | null;
+  liveDayChangePct?: number | null;
+  liveIntradayMomentumPct?: number | null;
   liveAsOf?: string | null;
   providerAttempts?: Array<{
     symbol: string;
@@ -139,6 +143,8 @@ export interface LiveCoverageAuditItem {
   price: number | null;
   volume: number | null;
   rvol: number | null;
+  dayChangePct: number | null;
+  intradayMomentumPct: number | null;
   asOf: string | null;
   attemptedSymbols: string[];
   lastError: string | null;
@@ -981,7 +987,9 @@ function toTradingCandidate(
     continuation: effectiveContinuation,
     risk: riskScore(candidate),
     rvol: candidate.reaction.relativeVolume,
-    movePct: candidate.reaction.intradayMomentum,
+    movePct: candidate.reaction.intradayMomentumPct ?? candidate.reaction.intradayMomentum,
+    dayChangePct: candidate.reaction.dayChangePct,
+    intradayMomentumPct: candidate.reaction.intradayMomentumPct ?? candidate.reaction.intradayMomentum,
     score: Math.max(0, Math.min(100, Math.max(candidate.autonomousDiscoveryScore + narrativeBoost, discoveryScore) - priceOnlyPenalty)),
     confidence: candidate.discoveryConfidence,
     source: candidateSource(candidate),
@@ -1013,7 +1021,8 @@ function toPersistedCandidate(snapshot: RunnerCaseSnapshot, change?: string): Tr
   if (snapshot.ticker.toUpperCase() === "BIOX") return null;
   const rawRoot = snapshot.rawPayload as { raw?: { live?: Record<string, unknown> } } | null;
   const live = rawRoot?.raw?.live ?? {};
-  const movePct = numberFromPayload(live, "intradayMomentum");
+  const movePct = numberFromPayload(live, "intradayMomentumPct", numberFromPayload(live, "intradayMomentum"));
+  const dayChangePct = numberFromPayload(live, "dayChangePct", movePct);
   const rvol = numberFromPayload(live, "relativeVolume");
   const continuation = numberFromPayload(live, "continuationProbability");
   const fade = numberFromPayload(live, "fadeProbability", snapshot.risk);
@@ -1065,6 +1074,8 @@ function toPersistedCandidate(snapshot: RunnerCaseSnapshot, change?: string): Tr
     risk: fade,
     rvol,
     movePct,
+    dayChangePct,
+    intradayMomentumPct: movePct,
     score: snapshot.score,
     confidence: snapshot.confidence,
     source: `Persisted case-state / ${sourceBucket}`,
@@ -1185,6 +1196,8 @@ function buildTrackedUniverse(input: {
         livePrice: reaction.price,
         liveVolume: reaction.volume,
         liveRvol: reaction.relativeVolume,
+        liveDayChangePct: reaction.dayChangePct,
+        liveIntradayMomentumPct: reaction.intradayMomentumPct ?? reaction.intradayMomentum,
         liveAsOf: reaction.asOf,
         providerAttempts: alias?.attemptedSymbols,
         quoteStatus: alias?.attemptedSymbols.some((attempt) => attempt.hasQuote) ? "present" as const : "missing" as const,
@@ -1201,6 +1214,8 @@ function buildTrackedUniverse(input: {
         livePrice: null,
         liveVolume: null,
         liveRvol: null,
+        liveDayChangePct: null,
+        liveIntradayMomentumPct: null,
         liveAsOf: null,
         providerAttempts: missing.providerAttempts,
         quoteStatus: missing.quoteStatus,
@@ -1217,6 +1232,8 @@ function buildTrackedUniverse(input: {
         livePrice: null,
         liveVolume: null,
         liveRvol: null,
+        liveDayChangePct: candidate.dayChangePct ?? null,
+        liveIntradayMomentumPct: candidate.intradayMomentumPct ?? candidate.movePct ?? null,
         liveAsOf: null,
         providerAttempts: alias?.attemptedSymbols,
         quoteStatus: alias?.attemptedSymbols.some((attempt) => attempt.hasQuote) ? "present" as const : undefined,
@@ -1232,6 +1249,8 @@ function buildTrackedUniverse(input: {
       livePrice: null,
       liveVolume: null,
       liveRvol: null,
+      liveDayChangePct: null,
+      liveIntradayMomentumPct: null,
       liveAsOf: null,
       providerAttempts: alias?.attemptedSymbols,
       quoteStatus: alias?.attemptedSymbols.some((attempt) => attempt.hasQuote) ? "present" as const : undefined,
@@ -1341,6 +1360,8 @@ function buildLiveCoverageAudit(trackedUniverse: TrackedTicker[]): LiveCoverageA
       price: item?.livePrice ?? null,
       volume: item?.liveVolume ?? null,
       rvol: item?.liveRvol ?? null,
+      dayChangePct: item?.liveDayChangePct ?? null,
+      intradayMomentumPct: item?.liveIntradayMomentumPct ?? null,
       asOf: item?.liveAsOf ?? null,
       attemptedSymbols: item?.attemptedSymbols ?? [],
       lastError: lastFailedAttempt?.error ?? item?.liveDataMissingReason ?? null,
