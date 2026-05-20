@@ -36,6 +36,7 @@ export interface RawHeadlineInput {
   source?: string;
   publishedAt?: string;
   category?: string;
+  url?: string;
 }
 
 export interface NewsTrigger {
@@ -45,6 +46,7 @@ export interface NewsTrigger {
   headline: string;
   source: string;
   publishedAt: string;
+  url?: string;
   triggerType: HeadlineTriggerType;
   triggerStrength: number;
   narrativeTriggerType: ParsedNarrativeTriggerType;
@@ -316,6 +318,7 @@ export function parseNewsTriggers(rawHeadlines: Array<string | RawHeadlineInput>
         headline: input.headline.trim(),
         source: input.source ?? "manual",
         publishedAt,
+        url: input.url,
         triggerType: classified.triggerType,
         triggerStrength,
         narrativeTriggerType: classified.narrativeTriggerType,

@@ -27,6 +27,7 @@ interface TradingCandidate {
   catalystType?: string;
   catalystScore?: number;
   catalystSummary?: string;
+  sourceUrl?: string;
   freshnessStatus?: "activeToday" | "premarketContext" | "afterClose" | "recentMemory" | "stale";
   dataAgeMinutes?: number;
   isActiveToday?: boolean;
@@ -164,6 +165,7 @@ interface CanonicalTradingSnapshot {
     headline: string;
     source: string;
     publishedAt: string;
+    url?: string;
     triggerType: string;
     triggerStrength: number;
     narrativeTriggerType: string;
@@ -464,6 +466,18 @@ type NewsTriggerItem = CanonicalTradingSnapshot["newsTriggers"][number];
 type TrackedItem = CanonicalTradingSnapshot["trackedUniverse"][number];
 type PositionItem = CanonicalTradingSnapshot["positionManagement"][number];
 type EarlyRadarItem = CanonicalTradingSnapshot["earlyRadar"][number];
+type SelectableItem = TradingCandidate | PriorityItem | NewsTriggerItem | TrackedItem | PositionItem | EarlyRadarItem;
+
+const clickableCardClass =
+  "cursor-pointer rounded border border-zinc-800 bg-zinc-950/70 p-3 text-left text-sm transition hover:border-cyan-800 hover:bg-zinc-900/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-500";
+
+function ClickableCard({ children, className = "", onClick }: { children: ReactNode; className?: string; onClick: () => void }) {
+  return (
+    <button type="button" onClick={onClick} className={`${clickableCardClass} ${className}`}>
+      {children}
+    </button>
+  );
+}
 
 function candidateFromPriority(snapshot: CanonicalTradingSnapshot, item: PriorityItem): TradingCandidate {
   const candidate =
@@ -562,6 +576,7 @@ function candidateFromNewsTrigger(snapshot: CanonicalTradingSnapshot, item: News
     catalystType: "news_expansion",
     catalystScore: item.triggerStrength,
     catalystSummary: item.headline,
+    sourceUrl: item.url,
     freshnessStatus: item.isFreshToday ? "activeToday" : "recentMemory",
     dataAgeMinutes: 0,
     isActiveToday: item.isFreshToday,
@@ -796,6 +811,16 @@ function CaseDrawer({ candidate, onClose }: { candidate: TradingCandidate; onClo
             <p className="text-xs uppercase tracking-[0.2em] text-violet-300">Catalyst</p>
             <p className="mt-2 text-sm leading-6 text-zinc-100">{candidate.catalystSummary ?? "Ingen verifierad catalyst i snapshot."}</p>
             <p className="mt-2 text-xs text-zinc-500">Catalyst score: {candidate.catalystScore ?? 0}/100</p>
+            {candidate.sourceUrl ? (
+              <a
+                href={candidate.sourceUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-3 inline-flex rounded border border-violet-700/60 px-3 py-1 text-xs text-violet-100 hover:bg-violet-950/50"
+              >
+                Open source
+              </a>
+            ) : null}
           </div>
           <div className="rounded border border-cyan-900/70 bg-cyan-950/20 p-4">
             <p className="text-xs uppercase tracking-[0.2em] text-cyan-300">Why now</p>
@@ -915,6 +940,31 @@ export function TerminalV2Shell() {
   );
   const breadthItems = snapshot?.breadth[breadthTab] ?? [];
 
+  function openDetailForItem(item: SelectableItem) {
+    if (!snapshot) return;
+    if ("priorityState" in item) {
+      setSelectedCase(candidateFromPriority(snapshot, item));
+      return;
+    }
+    if ("headline" in item && "triggerType" in item) {
+      setSelectedCase(candidateFromNewsTrigger(snapshot, item));
+      return;
+    }
+    if ("radarReason" in item) {
+      setSelectedCase(candidateFromEarlyRadar(snapshot, item));
+      return;
+    }
+    if ("decision" in item && "whatChanged" in item) {
+      setSelectedCase(candidateFromPosition(snapshot, item));
+      return;
+    }
+    if ("summary" in item && "status" in item) {
+      setSelectedCase(candidateFromTracked(snapshot, item));
+      return;
+    }
+    setSelectedCase(item);
+  }
+
   if (loading && !snapshot) {
     return <main className="min-h-screen bg-black p-6 text-zinc-100">Bygger canonical trading snapshot...</main>;
   }
@@ -1009,7 +1059,7 @@ export function TerminalV2Shell() {
           ) : null}
           <div className="grid gap-3 md:grid-cols-3">
             {snapshot.topFocus.length > 0 ? snapshot.topFocus.slice(0, 3).map((candidate) => (
-              <button type="button" onClick={() => setSelectedCase(candidate)} key={`focus-${candidate.ticker}`} className="rounded border border-zinc-800 bg-zinc-900/50 p-3 text-left hover:border-cyan-800">
+              <button type="button" onClick={() => openDetailForItem(candidate)} key={`focus-${candidate.ticker}`} className="cursor-pointer rounded border border-zinc-800 bg-zinc-900/50 p-3 text-left transition hover:border-cyan-800 hover:bg-zinc-900/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-500">
                 <div className="flex items-center justify-between gap-2">
                   <span className="font-semibold">{candidate.ticker}</span>
                   <span className={`rounded border px-2 py-0.5 text-[11px] ${badgeClass(candidate.action)}`}>{candidate.action}</span>
@@ -1030,7 +1080,7 @@ export function TerminalV2Shell() {
                 <button
                   key={`priority-${item.ticker}-${item.priorityState}`}
                   type="button"
-                  onClick={() => setSelectedCase(candidateFromPriority(snapshot, item))}
+                  onClick={() => openDetailForItem(item)}
                   className="grid w-full cursor-pointer gap-2 rounded border border-zinc-800 bg-zinc-950/70 p-3 text-left text-sm transition hover:border-cyan-800 hover:bg-zinc-900/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-500 md:grid-cols-[120px_130px_1fr_90px] md:items-center"
                 >
                   <div>
@@ -1068,7 +1118,7 @@ export function TerminalV2Shell() {
                 <button
                   key={`early-radar-${item.ticker}-${item.rank}`}
                   type="button"
-                  onClick={() => setSelectedCase(candidateFromEarlyRadar(snapshot, item))}
+                  onClick={() => openDetailForItem(item)}
                   className="grid w-full cursor-pointer gap-2 rounded border border-zinc-800 bg-zinc-950/70 p-3 text-left text-sm transition hover:border-violet-700 hover:bg-zinc-900/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 md:grid-cols-[70px_120px_1fr_1fr_80px] md:items-center"
                 >
                   <div className="text-xs text-zinc-500">#{item.rank}</div>
@@ -1127,47 +1177,29 @@ export function TerminalV2Shell() {
           ) : null}
           {snapshot.newsTriggers.length > 0 ? (
             <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-5">
-              {snapshot.newsTriggers.slice(0, 5).map((item) => item.ticker ? (
-                <button
+              {snapshot.newsTriggers.slice(0, 5).map((item) => (
+                <ClickableCard
                   key={`news-trigger-${item.id}`}
-                  type="button"
-                  onClick={() => setSelectedCase(candidateFromNewsTrigger(snapshot, item))}
-                  className="cursor-pointer rounded border border-zinc-800 bg-zinc-950/70 p-3 text-left text-sm transition hover:border-violet-700 hover:bg-zinc-900/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500"
+                  onClick={() => openDetailForItem(item)}
+                  className={item.ticker ? "hover:border-violet-700 focus-visible:outline-violet-500" : "border-zinc-800 text-zinc-400 hover:border-amber-700 focus-visible:outline-amber-500"}
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div>
-                      <div className="font-semibold text-zinc-100">{item.ticker ?? "NO TICKER"}</div>
+                      <div className={item.ticker ? "font-semibold text-zinc-100" : "font-semibold text-zinc-500"}>{item.ticker ?? "NO TICKER"}</div>
                       <div className="text-[11px] text-zinc-600">{item.company ?? item.source}</div>
                     </div>
-                    <span className="rounded border border-violet-700/60 bg-violet-950/30 px-2 py-0.5 text-[10px] text-violet-100">
+                    <span className={item.ticker ? "rounded border border-violet-700/60 bg-violet-950/30 px-2 py-0.5 text-[10px] text-violet-100" : "rounded border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[10px] text-zinc-400"}>
                       {item.triggerType}
                     </span>
                   </div>
-                  <p className="mt-2 line-clamp-2 text-xs leading-5 text-zinc-300">{item.headline}</p>
-                  <p className="mt-2 text-[11px] text-zinc-500">
+                  <p className={item.ticker ? "mt-2 line-clamp-2 text-xs leading-5 text-zinc-300" : "mt-2 line-clamp-2 text-xs leading-5 text-zinc-400"}>{item.headline}</p>
+                  <p className={item.ticker ? "mt-2 text-[11px] text-zinc-500" : "mt-2 text-[11px] text-zinc-600"}>
                     <span className={`mr-1 rounded border px-1.5 py-0.5 text-[9px] ${verificationClass(item.triggerVerificationState)}`}>
                       {verificationLabel(item.triggerVerificationState)}
                     </span>
                     {item.source} · {ageMinutes(item.publishedAt)} · styrka {item.triggerStrength}/100 · repricing {item.repricingPotential}/100
                   </p>
-                </button>
-              ) : (
-                <div key={`news-trigger-${item.id}`} className="rounded border border-zinc-800 bg-zinc-950/70 p-3 text-sm">
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <div className="font-semibold text-zinc-500">NO TICKER</div>
-                      <div className="text-[11px] text-zinc-600">{item.company ?? item.source}</div>
-                    </div>
-                    <span className="rounded border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[10px] text-zinc-400">{item.triggerType}</span>
-                  </div>
-                  <p className="mt-2 line-clamp-2 text-xs leading-5 text-zinc-400">{item.headline}</p>
-                  <p className="mt-2 text-[11px] text-zinc-600">
-                    <span className={`mr-1 rounded border px-1.5 py-0.5 text-[9px] ${verificationClass(item.triggerVerificationState)}`}>
-                      {verificationLabel(item.triggerVerificationState)}
-                    </span>
-                    {item.source} · {ageMinutes(item.publishedAt)}
-                  </p>
-                </div>
+                </ClickableCard>
               ))}
             </div>
           ) : (
@@ -1180,7 +1212,7 @@ export function TerminalV2Shell() {
             {snapshot.candidates.filter((candidate) => candidate.isActiveToday).slice(0, 6).length > 0 ? (
               <div className="space-y-2">
                 {snapshot.candidates.filter((candidate) => candidate.isActiveToday).slice(0, 6).map((candidate) => (
-                  <MiniCase key={`active-today-${candidate.ticker}`} candidate={candidate} onOpen={setSelectedCase} />
+                  <MiniCase key={`active-today-${candidate.ticker}`} candidate={candidate} onOpen={openDetailForItem} />
                 ))}
               </div>
             ) : (
@@ -1195,7 +1227,7 @@ export function TerminalV2Shell() {
                   <button
                     key={`memory-${item.ticker}-${item.priorityState}`}
                     type="button"
-                    onClick={() => setSelectedCase(candidateFromPriority(snapshot, item))}
+                    onClick={() => openDetailForItem(item)}
                     className="w-full cursor-pointer rounded border border-zinc-800 bg-zinc-950/60 p-3 text-left text-sm transition hover:border-cyan-800 hover:bg-zinc-900/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-500"
                   >
                     <div className="flex items-center justify-between gap-2">
@@ -1215,7 +1247,7 @@ export function TerminalV2Shell() {
         <Section title="Live Edge Board">
           <div className="space-y-2">
             {snapshot.candidates.length > 0 ? snapshot.candidates.slice(0, 10).map((candidate) => (
-              <EdgeRow key={`edge-${candidate.ticker}-${candidate.sourceBucket}`} candidate={candidate} onOpen={setSelectedCase} />
+              <EdgeRow key={`edge-${candidate.ticker}-${candidate.sourceBucket}`} candidate={candidate} onOpen={openDetailForItem} />
             )) : (
               <div className="rounded border border-zinc-800 p-4 text-sm text-zinc-400">Inga kandidater i canonical snapshot.</div>
             )}
@@ -1244,7 +1276,7 @@ export function TerminalV2Shell() {
           {breadthItems.length > 0 ? (
             <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
               {breadthItems.map((candidate) => (
-                <MiniCase key={`breadth-${breadthTab}-${candidate.ticker}`} candidate={candidate} onOpen={setSelectedCase} />
+                <MiniCase key={`breadth-${breadthTab}-${candidate.ticker}`} candidate={candidate} onOpen={openDetailForItem} />
               ))}
             </div>
           ) : (
@@ -1259,7 +1291,7 @@ export function TerminalV2Shell() {
                 <button
                   key={`tracked-${item.ticker}`}
                   type="button"
-                  onClick={() => setSelectedCase(candidateFromTracked(snapshot, item))}
+                  onClick={() => openDetailForItem(item)}
                   className="cursor-pointer rounded border border-zinc-800 bg-zinc-950/60 p-3 text-left text-sm transition hover:border-cyan-800 hover:bg-zinc-900/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-500"
                 >
                   <div className="flex items-start justify-between gap-2">
@@ -1290,7 +1322,7 @@ export function TerminalV2Shell() {
                 <button
                   key={`position-${item.ticker}`}
                   type="button"
-                  onClick={() => setSelectedCase(candidateFromPosition(snapshot, item))}
+                  onClick={() => openDetailForItem(item)}
                   className="cursor-pointer rounded border border-zinc-800 bg-zinc-950/60 p-3 text-left text-sm transition hover:border-cyan-800 hover:bg-zinc-900/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-500"
                 >
                   <div className="flex items-start justify-between gap-2">
