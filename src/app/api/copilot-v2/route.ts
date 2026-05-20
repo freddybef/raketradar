@@ -75,6 +75,7 @@ interface CanonicalTradingSnapshot {
   trackedUniverse?: TrackedTicker[];
   positionManagement?: PositionManagementDecision[];
   priorityBoard?: PriorityItem[];
+  newsTriggers?: NewsTrigger[];
   breadth?: {
     hot?: TradingCandidate[];
     watch?: TradingCandidate[];
@@ -134,6 +135,24 @@ interface PriorityItem {
   changedFrom?: string | null;
   changedAt?: string | null;
   expiresSoon: boolean;
+}
+
+interface NewsTrigger {
+  id: string;
+  ticker: string | null;
+  company: string | null;
+  headline: string;
+  source: string;
+  publishedAt: string;
+  triggerType: string;
+  triggerStrength: number;
+  narrativeTriggerType: string;
+  thematicTags: string[];
+  isFreshToday: boolean;
+  marketCapSensitivity: number;
+  secondDerivativeScore: number;
+  repricingPotential: number;
+  summary: string;
 }
 
 const COPILOT_V2_MODEL = process.env.OPENAI_MODEL ?? "gpt-4.1-mini";
@@ -460,6 +479,7 @@ function compactSnapshot(snapshot: CanonicalTradingSnapshot) {
     portfolioDecisions: snapshot.portfolioDecisions?.slice(0, 10) ?? [],
     positionManagement: snapshot.positionManagement?.slice(0, 18) ?? [],
     priorityBoard: snapshot.priorityBoard?.slice(0, 12) ?? [],
+    newsTriggers: snapshot.newsTriggers?.slice(0, 10) ?? [],
     trackedUniverse: (snapshot.trackedUniverse ?? []).slice(0, 40).map((item) => ({
       ticker: item.ticker,
       company: item.company,
@@ -490,6 +510,7 @@ function buildSystemPrompt() {
     "Skilj alltid på 'var intressant' och 'är fortfarande actionable'. Använd signalQuality, decayScore, lastConfirmedAt, confirmationCount och staleReason.",
     "Old RVOL eller gammal squeeze får inte bära action. Om signalQuality är STALLED/EXHAUSTED/DEAD ska svaret nedgraderas tydligt.",
     "Vid frågor som varför går den, vad är storyn, är detta bara squeeze: börja med narrativeTriggerType, narrativeStrength, repricingProbability och hasFreshFundamentalCatalyst före RVOL/momentum.",
+    "Om newsTriggers finns för tickern eller frågan gäller dagens triggers/PM/rubriker: använd newsTriggers först, sedan price/volume.",
     "Om ticker finns i trackedUniverse men inte i aktiva candidates: säg att den är tracked men inte aktiv toppkandidat just nu. Säg aldrig 'no data' för tracked tickers.",
     "Tracked tickers kan sakna färsk livebekräftelse. Då är beslutet bevaka/re-check, inte att caset är okänt.",
     "Vid breda frågor som vad ska jag fokusera på, vad spelar roll nu, vad ignorerar jag eller vad har dött: prioritera priorityBoard framför långa kandidatlistor.",
@@ -660,6 +681,16 @@ function focusAnswer(snapshot: CanonicalTradingSnapshot) {
 
 function priorityQuestionAnswer(message: string, snapshot: CanonicalTradingSnapshot) {
   const lower = message.toLowerCase();
+  if (/trigger|pm|rubrik|headline|nyhet|nyheter/.test(lower)) {
+    const triggers = (snapshot.newsTriggers ?? []).slice(0, 5);
+    if (triggers.length > 0) {
+      return [
+        `Beslut: viktigaste triggers först, inte momentum först.`,
+        ...triggers.map((item) => `${item.ticker ?? "NO TICKER"}: ${item.triggerType}/${item.narrativeTriggerType} (${item.triggerStrength}/100). ${item.summary}`),
+        "Nästa steg: kräv live reaction innan det blir action-case.",
+      ].join("\n");
+    }
+  }
   const items = (snapshot.priorityBoard ?? []).filter((item) =>
     snapshot.isFreshForToday ? item.freshnessStatus === "activeToday" : item.freshnessStatus !== "activeToday"
   );

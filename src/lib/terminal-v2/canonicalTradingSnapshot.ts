@@ -1,6 +1,7 @@
 import type { AutonomousDiscoveryCandidate, AutonomousDiscoveryResult, DiscoveryBucket } from "@/lib/intelligence/autonomousDiscovery";
 import { runAutonomousDiscoveryScan } from "@/lib/intelligence/autonomousDiscovery";
 import { getLatestCaseStateSnapshots, getLatestRunChanges, type RankingChange, type RunnerCaseSnapshot } from "@/lib/db/runnerRepository";
+import { parseNewsTriggers, type NewsTrigger, type RawHeadlineInput } from "@/lib/newsTriggerParsing";
 import { yahooLiveMarketReactionProvider } from "@/lib/providers/liveMarketReactionProvider";
 
 export type TradingAction = "Agera" | "Bevaka" | "Het men jaga inte" | "Hog risk" | "Undvik";
@@ -202,6 +203,7 @@ export interface CanonicalTradingSnapshot {
   trackedUniverse: TrackedTicker[];
   positionManagement: PositionManagementDecision[];
   priorityBoard: PriorityItem[];
+  newsTriggers: NewsTrigger[];
   breadth: {
     hot: TradingCandidate[];
     watch: TradingCandidate[];
@@ -378,6 +380,26 @@ function coveragePercent(result: AutonomousDiscoveryResult) {
   return result.scannedCount > 0 ? Math.round((result.liveHits / result.scannedCount) * 100) : 0;
 }
 
+function loadManualHeadlineInputs(): Array<string | RawHeadlineInput> {
+  const raw = process.env.RAKETRADAR_NEWS_HEADLINES ?? process.env.NEWS_TRIGGER_HEADLINES;
+  if (!raw?.trim()) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (Array.isArray(parsed)) {
+      return parsed.filter((item): item is string | RawHeadlineInput =>
+        typeof item === "string" ||
+        (typeof item === "object" && item !== null && typeof (item as { headline?: unknown }).headline === "string")
+      );
+    }
+  } catch {
+    // Fall through to line-separated parsing.
+  }
+  return raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
 function marketQuality(result: AutonomousDiscoveryResult): MarketQuality["label"] {
   const coverage = coveragePercent(result);
   if (coverage < 35 || result.liveHits === 0) return "degraded";
@@ -504,6 +526,7 @@ function classifyNarrativeTrigger(
   candidate: AutonomousDiscoveryCandidate,
   catalyst: { type: CatalystType; score: number; summary: string },
   freshness: ReturnType<typeof candidateFreshness>,
+  newsTrigger?: NewsTrigger,
 ): {
   narrativeTriggerType: NarrativeTriggerType;
   narrativeStrength: number;
@@ -513,6 +536,17 @@ function classifyNarrativeTrigger(
   marketAttentionShift: number;
   hasFreshFundamentalCatalyst: boolean;
 } {
+  if (newsTrigger) {
+    return {
+      narrativeTriggerType: newsTrigger.narrativeTriggerType as NarrativeTriggerType,
+      narrativeStrength: Math.max(35, Math.min(100, Math.round(newsTrigger.triggerStrength * 0.45 + newsTrigger.repricingPotential * 0.45 + (newsTrigger.isFreshToday ? 8 : -12)))),
+      narrativeFreshness: newsTrigger.isFreshToday ? 92 : 28,
+      thematicTailwind: Math.max(20, newsTrigger.secondDerivativeScore),
+      repricingProbability: newsTrigger.repricingPotential,
+      marketAttentionShift: Math.max(35, Math.round(candidate.reaction.activeTraderAttention * 0.55 + newsTrigger.triggerStrength * 0.25)),
+      hasFreshFundamentalCatalyst: newsTrigger.isFreshToday && newsTrigger.narrativeTriggerType !== "UNKNOWN" && newsTrigger.triggerType !== "MACRO_NOISE",
+    };
+  }
   const text = narrativeText(candidate);
   const reaction = candidate.reaction;
   const isSmallMid = /small|micro|nano|first north|spotlight|ngm|nordic sme/i.test(`${candidate.marketCapBucket} ${candidate.exchange}`);
@@ -729,6 +763,7 @@ function toTradingCandidate(
   candidate: AutonomousDiscoveryCandidate,
   change: string | undefined,
   snapshotFreshness: ReturnType<typeof buildSnapshotFreshness>,
+  newsByTicker: Map<string, NewsTrigger>,
 ): TradingCandidate | null {
   if (candidate.ticker.toUpperCase() === "BIOX") return null;
   if (candidate.bucket === "SUPPRESSED" && candidate.autonomousDiscoveryScore < 45) return null;
@@ -736,7 +771,8 @@ function toTradingCandidate(
   const catalyst = classifyCatalyst(candidate);
   const catalystScore = catalystWeight(candidate, catalyst);
   const freshness = candidateFreshness(candidate.reaction.asOf, snapshotFreshness);
-  const narrative = classifyNarrativeTrigger(candidate, { ...catalyst, score: catalystScore }, freshness);
+  const newsTrigger = newsByTicker.get(candidate.ticker.toUpperCase());
+  const narrative = classifyNarrativeTrigger(candidate, { ...catalyst, score: catalystScore }, freshness, newsTrigger);
   const signalQuality = assessSignalQuality({ candidate, freshness, catalystScore });
   const rawAction = actionFor(candidate);
   const action: TradingAction =
@@ -763,7 +799,9 @@ function toTradingCandidate(
     exchange: candidate.exchange,
     action,
     setupType,
-    thesis: narrative.narrativeTriggerType !== "UNKNOWN" && narrative.narrativeStrength >= 55
+    thesis: newsTrigger
+      ? `${newsTrigger.triggerType}: ${newsTrigger.summary} ${thesisFor(candidate, setupType, { ...catalyst, score: catalystScore })}`
+      : narrative.narrativeTriggerType !== "UNKNOWN" && narrative.narrativeStrength >= 55
       ? `${narrative.narrativeTriggerType.replaceAll("_", " ").toLowerCase()}: ${thesisFor(candidate, setupType, { ...catalyst, score: catalystScore })}`
       : thesisFor(candidate, setupType, { ...catalyst, score: catalystScore }),
     pros: prosFor(candidate),
@@ -785,7 +823,7 @@ function toTradingCandidate(
     needsNow: needsNowFor(candidate, setupType),
     catalystType: catalyst.type,
     catalystScore,
-    catalystSummary: catalyst.summary,
+    catalystSummary: newsTrigger ? `${newsTrigger.headline} — ${newsTrigger.summary}` : catalyst.summary,
     freshnessStatus: freshness.freshnessStatus,
     dataAgeMinutes: freshness.dataAgeMinutes,
     isActiveToday: freshness.isActiveToday,
@@ -1376,6 +1414,12 @@ export async function buildCanonicalTradingSnapshot(): Promise<CanonicalTradingS
   const now = new Date();
   const dataTimestamp = discovery?.generatedAt ? new Date(discovery.generatedAt) : null;
   const snapshotFreshness = buildSnapshotFreshness(now, dataTimestamp);
+  const newsTriggers = parseNewsTriggers(loadManualHeadlineInputs()).slice(0, 25);
+  const newsByTicker = new Map(
+    newsTriggers
+      .filter((trigger) => trigger.ticker)
+      .map((trigger) => [trigger.ticker!.toUpperCase(), trigger]),
+  );
   const changeByTicker = new Map<string, string>();
   for (const change of changesResult?.changes ?? []) {
     if (!changeByTicker.has(change.ticker)) changeByTicker.set(change.ticker, change.reason);
@@ -1397,7 +1441,7 @@ export async function buildCanonicalTradingSnapshot(): Promise<CanonicalTradingS
             seen.add(candidate.ticker);
             return true;
           })
-          .map((candidate) => toTradingCandidate(candidate, changeByTicker.get(candidate.ticker), snapshotFreshness))
+          .map((candidate) => toTradingCandidate(candidate, changeByTicker.get(candidate.ticker), snapshotFreshness, newsByTicker))
           .filter((candidate): candidate is TradingCandidate => Boolean(candidate))
           .sort(sortCandidates)
           .slice(0, 18);
@@ -1484,6 +1528,7 @@ export async function buildCanonicalTradingSnapshot(): Promise<CanonicalTradingS
     trackedUniverse,
     positionManagement,
     priorityBoard,
+    newsTriggers,
     breadth,
   };
 }

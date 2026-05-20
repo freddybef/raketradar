@@ -135,6 +135,23 @@ interface CanonicalTradingSnapshot {
     changedAt?: string | null;
     expiresSoon: boolean;
   }>;
+  newsTriggers: Array<{
+    id: string;
+    ticker: string | null;
+    company: string | null;
+    headline: string;
+    source: string;
+    publishedAt: string;
+    triggerType: string;
+    triggerStrength: number;
+    narrativeTriggerType: string;
+    thematicTags: string[];
+    isFreshToday: boolean;
+    marketCapSensitivity: number;
+    secondDerivativeScore: number;
+    repricingPotential: number;
+    summary: string;
+  }>;
   breadth: {
     hot: TradingCandidate[];
     watch: TradingCandidate[];
@@ -372,6 +389,7 @@ function MiniCase({ candidate, onOpen }: { candidate: TradingCandidate; onOpen: 
 }
 
 type PriorityItem = CanonicalTradingSnapshot["priorityBoard"][number];
+type NewsTriggerItem = CanonicalTradingSnapshot["newsTriggers"][number];
 
 function candidateFromPriority(snapshot: CanonicalTradingSnapshot, item: PriorityItem): TradingCandidate {
   const candidate =
@@ -432,6 +450,63 @@ function candidateFromPriority(snapshot: CanonicalTradingSnapshot, item: Priorit
     repricingProbability: 0,
     marketAttentionShift: 0,
     hasFreshFundamentalCatalyst: false,
+  };
+}
+
+function candidateFromNewsTrigger(snapshot: CanonicalTradingSnapshot, item: NewsTriggerItem): TradingCandidate {
+  const ticker = item.ticker ?? item.company ?? "NEWS";
+  const candidate =
+    snapshot.candidates.find((entry) => entry.ticker === ticker) ??
+    Object.values(snapshot.breadth).flat().find((entry) => entry.ticker === ticker) ??
+    snapshot.trackedUniverse.find((entry) => entry.ticker === ticker)?.candidate;
+  if (candidate) return candidate;
+  return {
+    ticker,
+    company: item.company ?? ticker,
+    exchange: "News Trigger Inbox",
+    action: item.isFreshToday && item.repricingPotential >= 70 ? "Bevaka" : "Undvik",
+    setupType: item.triggerType,
+    thesis: `${item.headline} — ${item.summary}`,
+    pros: [
+      item.isFreshToday ? "färsk headline idag" : null,
+      item.repricingPotential >= 65 ? `repricing ${item.repricingPotential}/100` : null,
+      item.secondDerivativeScore >= 60 ? "second-derivative theme" : null,
+    ].filter((entry): entry is string => Boolean(entry)),
+    cons: [item.ticker ? null : "saknar resolved ticker", item.triggerType === "UNKNOWN" ? "oklar trigger" : null].filter((entry): entry is string => Boolean(entry)),
+    trigger: "pris/volym måste bekräfta headline-triggern i live snapshot",
+    invalidation: "ingen live reaction eller rubriken visar sig vara makro/brus",
+    continuation: 0,
+    risk: item.triggerType === "FUNDING" ? 75 : item.triggerType === "MACRO_NOISE" ? 70 : 50,
+    rvol: 0,
+    movePct: 0,
+    source: `${item.source} / ${item.triggerType}`,
+    sourceBucket: "WATCH",
+    changed: null,
+    personality: "News trigger",
+    whyNow: item.summary,
+    needsNow: "live reaction måste bekräfta repricing-storyn",
+    catalystType: "news_expansion",
+    catalystScore: item.triggerStrength,
+    catalystSummary: item.headline,
+    freshnessStatus: item.isFreshToday ? "activeToday" : "recentMemory",
+    dataAgeMinutes: 0,
+    isActiveToday: item.isFreshToday,
+    firstSeenAt: item.publishedAt,
+    lastConfirmedAt: item.publishedAt,
+    freshnessMinutes: 0,
+    momentumAge: 0,
+    confirmationCount: item.ticker ? 1 : 0,
+    lastExpansionAt: null,
+    decayScore: item.isFreshToday ? 15 : 55,
+    staleReason: item.isFreshToday ? null : "headline är inte från dagens session",
+    signalQuality: item.isFreshToday ? "EARLY_WATCH" : "STALLED",
+    narrativeTriggerType: item.narrativeTriggerType,
+    narrativeStrength: item.triggerStrength,
+    narrativeFreshness: item.isFreshToday ? 90 : 25,
+    thematicTailwind: item.secondDerivativeScore,
+    repricingProbability: item.repricingPotential,
+    marketAttentionShift: 0,
+    hasFreshFundamentalCatalyst: item.isFreshToday && item.narrativeTriggerType !== "UNKNOWN",
   };
 }
 
@@ -741,6 +816,37 @@ export function TerminalV2Shell() {
             </div>
           ) : (
             <p className="text-sm text-zinc-400">Priority Board saknar signaler i senaste snapshot.</p>
+          )}
+        </Section>
+
+        <Section title="News Trigger Inbox">
+          {snapshot.newsTriggers.length > 0 ? (
+            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-5">
+              {snapshot.newsTriggers.slice(0, 5).map((item) => (
+                <button
+                  key={`news-trigger-${item.id}`}
+                  type="button"
+                  onClick={() => setSelectedCase(candidateFromNewsTrigger(snapshot, item))}
+                  className="rounded border border-zinc-800 bg-zinc-950/70 p-3 text-left text-sm transition hover:border-violet-700 hover:bg-zinc-900/80"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <div className="font-semibold text-zinc-100">{item.ticker ?? "NO TICKER"}</div>
+                      <div className="text-[11px] text-zinc-600">{item.company ?? item.source}</div>
+                    </div>
+                    <span className="rounded border border-violet-700/60 bg-violet-950/30 px-2 py-0.5 text-[10px] text-violet-100">
+                      {item.triggerType}
+                    </span>
+                  </div>
+                  <p className="mt-2 line-clamp-2 text-xs leading-5 text-zinc-300">{item.headline}</p>
+                  <p className="mt-2 text-[11px] text-zinc-500">
+                    styrka {item.triggerStrength}/100 · repricing {item.repricingPotential}/100
+                  </p>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-zinc-400">Inga manuella/news trigger-headlines i snapshoten. Lägg in via RAKETRADAR_NEWS_HEADLINES eller NEWS_TRIGGER_HEADLINES.</p>
           )}
         </Section>
 
