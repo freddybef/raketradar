@@ -23,10 +23,35 @@ interface TradingCandidate {
   catalystScore?: number;
   catalystSummary?: string;
   sourceBucket?: string;
+  freshnessStatus?: string;
+  dataAgeMinutes?: number;
+  isActiveToday?: boolean;
+  firstSeenAt?: string | null;
+  lastConfirmedAt?: string | null;
+  freshnessMinutes?: number;
+  momentumAge?: number;
+  confirmationCount?: number;
+  lastExpansionAt?: string | null;
+  decayScore?: number;
+  staleReason?: string | null;
+  signalQuality?: string;
+  narrativeTriggerType?: string;
+  narrativeStrength?: number;
+  narrativeFreshness?: number;
+  thematicTailwind?: number;
+  repricingProbability?: number;
+  marketAttentionShift?: number;
+  hasFreshFundamentalCatalyst?: boolean;
 }
 
 interface CanonicalTradingSnapshot {
   timestamp: string;
+  snapshotDate?: string;
+  marketSessionDate?: string;
+  generatedAt?: string;
+  dataAgeMinutes?: number;
+  isFreshForToday?: boolean;
+  marketSessionPhase?: string;
   providerStatus: {
     status?: string;
     scanned: number;
@@ -48,6 +73,8 @@ interface CanonicalTradingSnapshot {
   };
   whatChanged?: Array<{ ticker: string; changeType: string; reason: string }>;
   trackedUniverse?: TrackedTicker[];
+  positionManagement?: PositionManagementDecision[];
+  priorityBoard?: PriorityItem[];
   breadth?: {
     hot?: TradingCandidate[];
     watch?: TradingCandidate[];
@@ -67,6 +94,46 @@ interface TrackedTicker {
   lastKnownScore?: number | null;
   lastKnownConfidence?: number | null;
   candidate?: TradingCandidate;
+}
+
+interface PositionManagementDecision {
+  ticker: string;
+  company?: string;
+  state: string;
+  decisionLabel?: string;
+  decision: string;
+  reason?: string;
+  why: string;
+  trigger: string;
+  invalidation: string;
+  risk?: number;
+  whatChanged: string;
+  confidenceTrend: string;
+  confidence: number;
+  sourceStatus?: string;
+  suggestedAction?: string;
+  source: string;
+}
+
+interface PriorityItem {
+  ticker: string;
+  company?: string;
+  priorityState: "MUST_ACT" | "WATCH_CLOSELY" | "REENTRY_WATCH" | "LOW_PRIORITY" | "DEAD" | "AVOID";
+  headline: string;
+  whyNow: string;
+  action: string;
+  urgencyScore: number;
+  confidence: number;
+  sourceStatus: string;
+  freshnessStatus?: string;
+  signalQuality?: string;
+  narrativeTriggerType?: string;
+  narrativeStrength?: number;
+  freshnessMinutes?: number;
+  lastConfirmedAt?: string | null;
+  changedFrom?: string | null;
+  changedAt?: string | null;
+  expiresSoon: boolean;
 }
 
 const COPILOT_V2_MODEL = process.env.OPENAI_MODEL ?? "gpt-4.1-mini";
@@ -228,6 +295,18 @@ function trackedAnswer(item: TrackedTicker) {
   ].join("\n");
 }
 
+function positionAnswer(decision: PositionManagementDecision) {
+  return [
+    `Beslut: ${decision.ticker} - ${decision.decisionLabel ?? decision.state}. ${decision.decision}`,
+    `Varför: ${decision.reason ?? decision.why}`,
+    `Trigger: ${decision.trigger}`,
+    `Risk: ${decision.risk ?? "okänd"}/100. Confidence trend ${decision.confidenceTrend}, confidence ${decision.confidence}.`,
+    `Invalidation: ${decision.invalidation}`,
+    `Nästa åtgärd: ${decision.suggestedAction ?? "wait"}.`,
+    `Ändrat: ${decision.whatChanged}`,
+  ].join("\n");
+}
+
 function compareTracked(items: Array<TradingCandidate | TrackedTicker>) {
   const line = (item: TradingCandidate | TrackedTicker) => {
     if ("status" in item) return `${item.ticker}: ${item.status}. ${item.summary}`;
@@ -247,6 +326,9 @@ function compareTracked(items: Array<TradingCandidate | TrackedTicker>) {
 
 function candidateAnswer(candidate: TradingCandidate, stale = false) {
   const staleLine = stale ? "\n\nObs: svaret bygger på senaste snapshot som klienten skickade in." : "";
+  const freshnessLine = candidate.isActiveToday
+    ? "Freshness: active today med same-day livebekräftelse."
+    : `Freshness: ${candidate.freshnessStatus ?? "okänd"}. Behandla som context/re-entry, inte dagens action utan ny bekräftelse.`;
   const tone = candidate.sourceBucket === "PARABOLIC_WATCH" || candidate.action === "Het men jaga inte"
     ? "Bra att bevaka, men sämre som ny entré efter dagens move."
     : candidate.sourceBucket === "RISK" || candidate.action === "Hog risk"
@@ -256,6 +338,10 @@ function candidateAnswer(candidate: TradingCandidate, stale = false) {
         : "Aktivt case i senaste tavlan.";
   return [
     `Bedömning: ${candidate.ticker} är ${candidate.action.toLowerCase()} i senaste snapshot, inte ett coverage gap.`,
+    freshnessLine,
+    `Story: ${candidate.narrativeTriggerType ?? "UNKNOWN"} · narrative ${candidate.narrativeStrength ?? 0}/100 · repricing ${candidate.repricingProbability ?? 0}/100${candidate.hasFreshFundamentalCatalyst ? " · färsk fundamental catalyst" : ""}.`,
+    `Signal quality: ${candidate.signalQuality ?? "okänd"} · decay ${candidate.decayScore ?? 0}/100 · confirmations ${candidate.confirmationCount ?? 0}.`,
+    candidate.staleReason ? `Stale/decay: ${candidate.staleReason}.` : `Senast bekräftad: ${candidate.lastConfirmedAt ?? "okänd"}.`,
     `Tone: ${tone}`,
     `Catalyst: ${candidate.catalystSummary ?? candidate.catalystType ?? "ingen verifierad catalyst i snapshot"}${candidate.catalystScore !== undefined ? ` (${candidate.catalystScore}/100)` : ""}.`,
     `Typ av move: ${candidate.personality ?? candidate.setupType}.`,
@@ -274,8 +360,11 @@ function fallbackAnswer(input: {
 }) {
   const lowerMessage = input.message.toLowerCase();
   const comparisonMode = /jämför|jamfor|vilken|bäst|bast|starkast|mest intressant/.test(lowerMessage);
+  const positionMode = /äger|ager|innehav|position|håller|haller|trimma|sälja|salja|stop|add|öka|oka|minska|alive|fortfarande/.test(lowerMessage);
+  const priorityMode = /fokus|plan|spelar roll|prioritet|prioritera|ignorer|undvik|dött|dott|dog|dead|ändrat|andrat|changed/.test(lowerMessage);
   const candidate = mentionedTicker(input.message, input.snapshot);
   const tracked = mentionedTracked(input.message, input.snapshot);
+  const position = input.snapshot.positionManagement?.find((item) => item.ticker === candidate?.candidate.ticker || item.ticker === tracked?.item.ticker);
   const comparisonCandidates = comparisonMode
     ? [...new Map([...(candidate ? [candidate.candidate] : []), ...mentionedCandidates(input.message, input.snapshot)].map((item) => [item.ticker, item])).values()].slice(0, 2)
     : [];
@@ -289,6 +378,10 @@ function fallbackAnswer(input: {
     ? comparisonAnswer(comparisonCandidates)
     : comparisonMode && comparisonItems.length >= 2
       ? compareTracked(comparisonItems)
+    : positionMode && position
+      ? positionAnswer(position)
+    : priorityMode
+      ? priorityQuestionAnswer(input.message, input.snapshot)
     : candidate
       ? `${candidate.assumed ? `Jag hittar inte exakt formulering, men jag antar att du menar ${candidate.candidate.ticker}${candidate.candidate.company ? ` / ${candidate.candidate.company}` : ""}.\n` : ""}${candidateAnswer(candidate.candidate, Boolean(input.snapshot))}`
       : tracked
@@ -318,6 +411,22 @@ function compactCandidate(candidate: TradingCandidate) {
     rvol: candidate.rvol,
     movePct: candidate.movePct,
     sourceBucket: candidate.sourceBucket,
+    freshnessStatus: candidate.freshnessStatus,
+    dataAgeMinutes: candidate.dataAgeMinutes,
+    isActiveToday: candidate.isActiveToday,
+    signalQuality: candidate.signalQuality,
+    freshnessMinutes: candidate.freshnessMinutes,
+    confirmationCount: candidate.confirmationCount,
+    lastConfirmedAt: candidate.lastConfirmedAt,
+    decayScore: candidate.decayScore,
+    staleReason: candidate.staleReason,
+    narrativeTriggerType: candidate.narrativeTriggerType,
+    narrativeStrength: candidate.narrativeStrength,
+    narrativeFreshness: candidate.narrativeFreshness,
+    thematicTailwind: candidate.thematicTailwind,
+    repricingProbability: candidate.repricingProbability,
+    marketAttentionShift: candidate.marketAttentionShift,
+    hasFreshFundamentalCatalyst: candidate.hasFreshFundamentalCatalyst,
     catalystType: candidate.catalystType,
     catalystScore: candidate.catalystScore,
     catalystSummary: candidate.catalystSummary,
@@ -328,6 +437,12 @@ function compactSnapshot(snapshot: CanonicalTradingSnapshot) {
   const candidates = snapshotCandidates(snapshot).slice(0, 24);
   return {
     timestamp: snapshot.timestamp,
+    snapshotDate: snapshot.snapshotDate,
+    marketSessionDate: snapshot.marketSessionDate,
+    generatedAt: snapshot.generatedAt,
+    dataAgeMinutes: snapshot.dataAgeMinutes,
+    isFreshForToday: snapshot.isFreshForToday,
+    marketSessionPhase: snapshot.marketSessionPhase,
     providerStatus: snapshot.providerStatus,
     marketQuality: snapshot.marketQuality,
     marketPulse: snapshot.marketPulse,
@@ -343,6 +458,8 @@ function compactSnapshot(snapshot: CanonicalTradingSnapshot) {
       recentlyActive: (snapshot.breadth?.recentlyActive ?? []).slice(0, 8).map(compactCandidate),
     },
     portfolioDecisions: snapshot.portfolioDecisions?.slice(0, 10) ?? [],
+    positionManagement: snapshot.positionManagement?.slice(0, 18) ?? [],
+    priorityBoard: snapshot.priorityBoard?.slice(0, 12) ?? [],
     trackedUniverse: (snapshot.trackedUniverse ?? []).slice(0, 40).map((item) => ({
       ticker: item.ticker,
       company: item.company,
@@ -368,9 +485,16 @@ function buildSystemPrompt() {
     "Vid hindsight/missed mover måste du alltid svara med rubrikerna: Kunde systemet ha hittat den?, Vad fanns i snapshoten?, Vad saknades?, Vad krävs nästa gång?.",
     "Om X inte finns i snapshoten ska du inte säga tvärsäkert att systemet inte kunde hitta den historiskt. Säg: den finns inte i senaste snapshoten, och utifrån just denna snapshot kan jag inte bevisa att den var observerad före rusningen.",
     "Om ticker/bolag finns i candidates, breadth eller recentlyActive får du aldrig säga att det saknas.",
+    "Presentera aldrig en gårdagens/recentMemory/stale runner som dagens åtgärd. Dagens action kräver isActiveToday eller tydligt färsk same-day livebekräftelse.",
+    "Om snapshoten inte är freshForToday ska du säga det direkt vid breda frågor och behandla case som context/re-entry, inte current action.",
+    "Skilj alltid på 'var intressant' och 'är fortfarande actionable'. Använd signalQuality, decayScore, lastConfirmedAt, confirmationCount och staleReason.",
+    "Old RVOL eller gammal squeeze får inte bära action. Om signalQuality är STALLED/EXHAUSTED/DEAD ska svaret nedgraderas tydligt.",
+    "Vid frågor som varför går den, vad är storyn, är detta bara squeeze: börja med narrativeTriggerType, narrativeStrength, repricingProbability och hasFreshFundamentalCatalyst före RVOL/momentum.",
     "Om ticker finns i trackedUniverse men inte i aktiva candidates: säg att den är tracked men inte aktiv toppkandidat just nu. Säg aldrig 'no data' för tracked tickers.",
     "Tracked tickers kan sakna färsk livebekräftelse. Då är beslutet bevaka/re-check, inte att caset är okänt.",
+    "Vid breda frågor som vad ska jag fokusera på, vad spelar roll nu, vad ignorerar jag eller vad har dött: prioritera priorityBoard framför långa kandidatlistor.",
     "Om frågan gäller innehav: svara som position manager: håll, trimma, sälj, bevaka, risk, trigger, invalidation. Inga orderinstruktioner.",
+    "Om positionManagement finns för tickern ska du använda state, decisionLabel, suggestedAction, reason/why, trigger, invalidation, risk, whatChanged och confidenceTrend som primär källa för innehav/position-frågor.",
     "Var skeptisk mot parabolic/no-chase, men behandla dem som viktiga momentum-case: inte chase, bara pullback/re-entry/ny trigger.",
     "Svarsstil: kort, trader-mässigt, beslut först. Defaultformat: Beslut, Varför, Trigger, Risk, Invalidation.",
     "Vid jämförelse: Starkast just nu, X för/emot, Y för/emot, Slutsats.",
@@ -501,6 +625,22 @@ function comparisonAnswer(candidates: TradingCandidate[]) {
 }
 
 function focusAnswer(snapshot: CanonicalTradingSnapshot) {
+  const priority = (snapshot.priorityBoard ?? [])
+    .filter((item) => snapshot.isFreshForToday ? item.freshnessStatus === "activeToday" : item.freshnessStatus !== "activeToday")
+    .slice(0, 5);
+  if (priority.length > 0) {
+    const must = priority.filter((item) => item.priorityState === "MUST_ACT");
+    const watch = priority.filter((item) => item.priorityState === "WATCH_CLOSELY" || item.priorityState === "REENTRY_WATCH");
+    const avoid = priority.filter((item) => item.priorityState === "AVOID" || item.priorityState === "DEAD");
+    return [
+      `Beslut: ${must[0]?.ticker ? `${must[0].ticker} spelar mest roll nu.` : "ingen ren MUST_ACT just nu."}`,
+      snapshot.isFreshForToday ? "Freshness: same-day live snapshot." : `Freshness: inte färsk live-session (${snapshot.marketSessionDate ?? "okänd session"}). Behandla som market memory/re-entry.`,
+      `Nu: ${(must[0] ?? priority[0]).ticker} - ${(must[0] ?? priority[0]).action}.`,
+      watch[0] ? `Bevaka: ${watch[0].ticker} - ${watch[0].headline}.` : "Bevaka: inget tydligt nästa case.",
+      avoid[0] ? `Ignorera/undvik: ${avoid[0].ticker} - ${avoid[0].action}.` : "Undvik: inga nya tydliga röda flaggor i priorityBoard.",
+      `Datakvalitet: ${snapshot.marketQuality.label}, ${snapshot.providerStatus.liveHits}/${snapshot.providerStatus.scanned} live hits.`,
+    ].join("\n");
+  }
   const focus = snapshot.topFocus.slice(0, 3);
   if (focus.length === 0) {
     return [
@@ -515,6 +655,28 @@ function focusAnswer(snapshot: CanonicalTradingSnapshot) {
     "Beslut: fokusera på de här casen i senaste snapshot.",
     ...focus.map((candidate) => `${candidate.ticker}: ${candidate.action} - ${candidate.setupType}. ${candidate.thesis}`),
     `Datakvalitet: ${snapshot.marketQuality.label}, ${snapshot.providerStatus.liveHits}/${snapshot.providerStatus.scanned} live hits.`,
+  ].join("\n");
+}
+
+function priorityQuestionAnswer(message: string, snapshot: CanonicalTradingSnapshot) {
+  const lower = message.toLowerCase();
+  const items = (snapshot.priorityBoard ?? []).filter((item) =>
+    snapshot.isFreshForToday ? item.freshnessStatus === "activeToday" : item.freshnessStatus !== "activeToday"
+  );
+  if (items.length === 0) return focusAnswer(snapshot);
+  const filtered = /ignorer|undvik|avoid/.test(lower)
+    ? items.filter((item) => item.priorityState === "AVOID" || item.priorityState === "LOW_PRIORITY")
+    : /dött|dott|dog|dead/.test(lower)
+      ? items.filter((item) => item.priorityState === "DEAD")
+      : /ändrat|andrat|changed/.test(lower)
+        ? items.filter((item) => item.changedFrom)
+        : items.filter((item) => item.priorityState === "MUST_ACT" || item.priorityState === "WATCH_CLOSELY" || item.priorityState === "REENTRY_WATCH");
+  const top = (filtered.length > 0 ? filtered : items).slice(0, 4);
+  return [
+    `Beslut: ${top[0]?.ticker ?? "inget"} är högsta prioritet i priorityBoard.`,
+    snapshot.isFreshForToday ? "Freshness: dagens livebekräftelse." : `Freshness: inte dagens live-action. Visar ${snapshot.marketSessionPhase ?? "market memory"} / recent context.`,
+    ...top.map((item) => `${item.ticker}: ${item.priorityState} (${item.signalQuality ?? "WATCH"}, ${item.narrativeTriggerType ?? "UNKNOWN"}, ${item.freshnessMinutes ?? "-"}m) - ${item.action}. ${item.whyNow}`),
+    "Ignorera resten tills de får ny urgency eller state-ändring.",
   ].join("\n");
 }
 

@@ -1,0 +1,10 @@
+
+> raketradar-core@0.1.0 dev
+> next dev --port 3058
+
+▲ Next.js 16.2.6 (Turbopack)
+- Local:         http://localhost:3058
+- Network:       http://192.168.0.170:3058
+- Environments: .env.local
+✓ Ready in 687ms
+[?25h

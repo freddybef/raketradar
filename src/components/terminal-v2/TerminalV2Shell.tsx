@@ -27,10 +27,35 @@ interface TradingCandidate {
   catalystType?: string;
   catalystScore?: number;
   catalystSummary?: string;
+  freshnessStatus?: "activeToday" | "premarketContext" | "afterClose" | "recentMemory" | "stale";
+  dataAgeMinutes?: number;
+  isActiveToday?: boolean;
+  firstSeenAt?: string | null;
+  lastConfirmedAt?: string | null;
+  freshnessMinutes?: number;
+  momentumAge?: number;
+  confirmationCount?: number;
+  lastExpansionAt?: string | null;
+  decayScore?: number;
+  staleReason?: string | null;
+  signalQuality?: "FRESH_IGNITION" | "ACTIVE_CONTINUATION" | "EARLY_WATCH" | "STALLED" | "EXHAUSTED" | "DEAD" | "RECLAIM_SETUP";
+  narrativeTriggerType?: string;
+  narrativeStrength?: number;
+  narrativeFreshness?: number;
+  thematicTailwind?: number;
+  repricingProbability?: number;
+  marketAttentionShift?: number;
+  hasFreshFundamentalCatalyst?: boolean;
 }
 
 interface CanonicalTradingSnapshot {
   timestamp: string;
+  snapshotDate: string;
+  marketSessionDate: string;
+  generatedAt: string;
+  dataAgeMinutes: number;
+  isFreshForToday: boolean;
+  marketSessionPhase: "preopen" | "open" | "after_close" | "closed";
   providerStatus: {
     status: string;
     scanned: number;
@@ -70,6 +95,45 @@ interface CanonicalTradingSnapshot {
     summary: string;
     lastKnownState?: string | null;
     lastKnownScore?: number | null;
+    candidate?: TradingCandidate;
+  }>;
+  positionManagement: Array<{
+    ticker: string;
+    company?: string;
+    state: string;
+    decisionLabel?: string;
+    decision: string;
+    reason?: string;
+    why: string;
+    trigger: string;
+    invalidation: string;
+    risk?: number;
+    whatChanged: string;
+    confidenceTrend: "up" | "down" | "flat" | "unknown";
+    confidence: number;
+    sourceStatus?: "activeCandidate" | "recentlyActive" | "trackedButNotActive" | "unknown";
+    suggestedAction?: "hold" | "trim" | "sell" | "wait" | "reentry_only" | "no_add";
+    source: string;
+  }>;
+  priorityBoard: Array<{
+    ticker: string;
+    company?: string;
+    priorityState: "MUST_ACT" | "WATCH_CLOSELY" | "REENTRY_WATCH" | "LOW_PRIORITY" | "DEAD" | "AVOID";
+    headline: string;
+    whyNow: string;
+    action: string;
+    urgencyScore: number;
+    confidence: number;
+    sourceStatus: "activeCandidate" | "recentlyActive" | "trackedButNotActive" | "unknown";
+    freshnessStatus: "activeToday" | "premarketContext" | "afterClose" | "recentMemory" | "stale";
+    signalQuality?: string;
+    narrativeTriggerType?: string;
+    narrativeStrength?: number;
+    freshnessMinutes: number;
+    lastConfirmedAt?: string | null;
+    changedFrom?: string | null;
+    changedAt?: string | null;
+    expiresSoon: boolean;
   }>;
   breadth: {
     hot: TradingCandidate[];
@@ -138,6 +202,75 @@ function trackedStatusClass(status: string) {
   if (status === "recentlyActive") return "border-cyan-500/40 text-cyan-200";
   if (status === "trackedButNotActive") return "border-zinc-600 text-zinc-300";
   return "border-amber-500/40 text-amber-200";
+}
+
+function positionStateClass(state: string) {
+  if (["HOLD", "FIRST_PULLBACK_VALID"].includes(state)) return "border-emerald-500/40 text-emerald-200";
+  if (["TRIM", "TIGHTEN_STOP", "NO_ADD", "REENTRY_WATCH"].includes(state)) return "border-amber-500/40 text-amber-200";
+  return "border-rose-500/40 text-rose-200";
+}
+
+function trendSymbol(trend: string) {
+  if (trend === "up") return "upp";
+  if (trend === "down") return "ned";
+  if (trend === "flat") return "flat";
+  return "okänd";
+}
+
+function priorityStateClass(state: string) {
+  if (state === "MUST_ACT") return "border-emerald-400/50 bg-emerald-950/30 text-emerald-100";
+  if (state === "WATCH_CLOSELY" || state === "REENTRY_WATCH") return "border-cyan-400/40 bg-cyan-950/20 text-cyan-100";
+  if (state === "AVOID") return "border-amber-400/50 bg-amber-950/30 text-amber-100";
+  if (state === "DEAD") return "border-rose-500/50 bg-rose-950/25 text-rose-100";
+  return "border-zinc-700 bg-zinc-950 text-zinc-300";
+}
+
+function priorityLabel(state: string) {
+  const labels: Record<string, string> = {
+    MUST_ACT: "Måste agera",
+    WATCH_CLOSELY: "Bevaka nära",
+    REENTRY_WATCH: "Re-entry",
+    LOW_PRIORITY: "Låg prio",
+    DEAD: "Dött",
+    AVOID: "Undvik",
+  };
+  return labels[state] ?? state;
+}
+
+function freshnessLabel(status?: string) {
+  const labels: Record<string, string> = {
+    activeToday: "Active Today",
+    premarketContext: "Pre-open context",
+    afterClose: "After close",
+    recentMemory: "Recently Active / Market Memory",
+    stale: "Stale / Yesterday",
+  };
+  return labels[status ?? "stale"] ?? "Market Memory";
+}
+
+function signalFreshnessLabel(quality?: string) {
+  if (quality === "FRESH_IGNITION") return "FRESH";
+  if (quality === "ACTIVE_CONTINUATION" || quality === "RECLAIM_SETUP") return "ACTIVE";
+  if (quality === "EXHAUSTED" || quality === "DEAD") return "DYING";
+  if (quality === "STALLED") return "STALE";
+  return "WATCH";
+}
+
+function narrativeLabel(type?: string) {
+  const labels: Record<string, string> = {
+    REPORT_REPRICING: "Rapport-repricing",
+    COMMERCIALIZATION_SHIFT: "Kommersialisering",
+    SECOND_DERIVATIVE_THEME: "Second derivative",
+    OBESITY_ADJACENCY: "Obesity adjacency",
+    DEFENSE_ADJACENCY: "Försvar/cyber",
+    DATACENTER_INFRA: "Datacenter infra",
+    NEW_CONTRACT: "Nytt kontrakt",
+    REGULATORY_TRIGGER: "Regulatoriskt",
+    PROFITABILITY_INFLECTION: "Lönsamhetsvändning",
+    FUNDING_SURVIVAL: "Finansiering/överlevnad",
+    UNKNOWN: "Okänd story",
+  };
+  return labels[type ?? "UNKNOWN"] ?? type ?? "Okänd story";
 }
 
 function CandidateDetails({ candidate }: { candidate: TradingCandidate }) {
@@ -238,6 +371,70 @@ function MiniCase({ candidate, onOpen }: { candidate: TradingCandidate; onOpen: 
   );
 }
 
+type PriorityItem = CanonicalTradingSnapshot["priorityBoard"][number];
+
+function candidateFromPriority(snapshot: CanonicalTradingSnapshot, item: PriorityItem): TradingCandidate {
+  const candidate =
+    snapshot.candidates.find((entry) => entry.ticker === item.ticker) ??
+    Object.values(snapshot.breadth).flat().find((entry) => entry.ticker === item.ticker) ??
+    snapshot.trackedUniverse.find((entry) => entry.ticker === item.ticker)?.candidate;
+  if (candidate) return candidate;
+
+  const position = snapshot.positionManagement.find((entry) => entry.ticker === item.ticker);
+  const tracked = snapshot.trackedUniverse.find((entry) => entry.ticker === item.ticker);
+  return {
+    ticker: item.ticker,
+    company: item.company ?? tracked?.company ?? item.ticker,
+    exchange: "Market memory",
+    action: item.priorityState === "AVOID" ? "Het men jaga inte" : item.priorityState === "DEAD" ? "Undvik" : "Bevaka",
+    setupType: item.priorityState === "REENTRY_WATCH" ? "Re-entry watch" : item.priorityState === "DEAD" ? "Momentum dead" : "Tracked memory",
+    thesis: item.headline,
+    pros: [
+      item.sourceStatus === "recentlyActive" ? "nyligen aktiv i snapshot memory" : null,
+      position?.confidenceTrend === "up" ? "confidence trend upp" : null,
+      item.changedFrom ? `ändrat från ${item.changedFrom}` : null,
+    ].filter((entry): entry is string => Boolean(entry)),
+    cons: [
+      item.sourceStatus !== "activeCandidate" ? "saknar färsk aktiv kandidatstatus" : null,
+      position?.risk !== undefined ? `risk ${position.risk}/100` : null,
+    ].filter((entry): entry is string => Boolean(entry)),
+    trigger: position?.trigger ?? "återkommer med färsk livebekräftelse eller ny urgency",
+    invalidation: position?.invalidation ?? "fortsätter sakna momentum/volym i kommande scan",
+    continuation: 0,
+    risk: position?.risk ?? (item.priorityState === "AVOID" || item.priorityState === "DEAD" ? 75 : 50),
+    rvol: 0,
+    movePct: 0,
+    source: `Priority Board / ${item.sourceStatus}`,
+    sourceBucket: item.priorityState === "AVOID" ? "RISK" : item.priorityState === "DEAD" ? "SUPPRESSED" : "WATCH",
+    changed: item.changedFrom ? `Ändrat från ${item.changedFrom}` : null,
+    personality: item.priorityState === "REENTRY_WATCH" ? "Re-entry watch" : "Market memory",
+    whyNow: item.whyNow,
+    needsNow: position?.trigger ?? item.action,
+    catalystType: "unknown",
+    catalystScore: 0,
+    catalystSummary: tracked?.summary ?? position?.reason ?? "Ingen verifierad färsk catalyst i snapshot.",
+    freshnessStatus: item.freshnessStatus,
+    dataAgeMinutes: 0,
+    isActiveToday: false,
+    firstSeenAt: null,
+    lastConfirmedAt: item.lastConfirmedAt ?? null,
+    freshnessMinutes: item.freshnessMinutes,
+    momentumAge: item.freshnessMinutes,
+    confirmationCount: 0,
+    lastExpansionAt: null,
+    decayScore: item.priorityState === "DEAD" ? 85 : item.priorityState === "AVOID" ? 65 : 50,
+    staleReason: item.whyNow,
+    signalQuality: item.signalQuality as TradingCandidate["signalQuality"],
+    narrativeTriggerType: item.narrativeTriggerType,
+    narrativeStrength: item.narrativeStrength,
+    narrativeFreshness: 0,
+    thematicTailwind: 0,
+    repricingProbability: 0,
+    marketAttentionShift: 0,
+    hasFreshFundamentalCatalyst: false,
+  };
+}
+
 function CaseDrawer({ candidate, onClose }: { candidate: TradingCandidate; onClose: () => void }) {
   return (
     <div className="fixed inset-0 z-50 bg-black/70 p-3 md:p-6" onClick={onClose}>
@@ -293,6 +490,13 @@ function CaseDrawer({ candidate, onClose }: { candidate: TradingCandidate; onClo
           <div className="rounded border border-zinc-800 p-4">
             <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Personality</p>
             <p className="mt-2 text-sm text-zinc-200">{candidate.personality ?? candidate.setupType}</p>
+            <p className="mt-2 text-xs text-zinc-500">
+              Signal: {signalFreshnessLabel(candidate.signalQuality)} · decay {candidate.decayScore ?? 0}/100 · confirmations {candidate.confirmationCount ?? 0}
+            </p>
+            <p className="mt-1 text-xs text-violet-200">
+              Story: {narrativeLabel(candidate.narrativeTriggerType)} · narrative {candidate.narrativeStrength ?? 0}/100 · repricing {candidate.repricingProbability ?? 0}/100
+            </p>
+            {candidate.staleReason ? <p className="mt-1 text-xs text-amber-200">{candidate.staleReason}</p> : null}
           </div>
           <CandidateDetails candidate={candidate} />
           <div className="grid gap-3 md:grid-cols-2">
@@ -425,13 +629,20 @@ export function TerminalV2Shell() {
           <div className="flex items-center gap-3">
             <div className="text-right text-xs text-zinc-500">
               <div>{new Date(snapshot.timestamp).toLocaleString("sv-SE")}</div>
-              <div>{snapshot.providerStatus.liveHits}/{snapshot.providerStatus.scanned} live hits · {snapshot.marketQuality.label}</div>
+              <div>Session {snapshot.marketSessionDate} · {snapshot.marketSessionPhase}</div>
+              <div>{snapshot.providerStatus.liveHits}/{snapshot.providerStatus.scanned} live hits · {snapshot.marketQuality.label} · age {snapshot.dataAgeMinutes}m</div>
             </div>
             <button onClick={loadSnapshot} className="rounded border border-cyan-700 bg-cyan-950/50 px-3 py-2 text-sm text-cyan-100 hover:bg-cyan-900/50">
               Kör scan
             </button>
           </div>
         </header>
+
+        {!snapshot.isFreshForToday ? (
+          <div className="rounded border border-amber-700/60 bg-amber-950/30 p-3 text-sm text-amber-100">
+            Varning: snapshoten är inte färsk för dagens live-session. Behandla kandidater som pre-open/after-close eller market memory tills ny same-day livebekräftelse finns.
+          </div>
+        ) : null}
 
         <section className="rounded border border-cyan-900/70 bg-cyan-950/20 p-4">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -498,6 +709,78 @@ export function TerminalV2Shell() {
           </div>
         </Section>
 
+        <Section title="Priority Board">
+          {snapshot.priorityBoard.length > 0 ? (
+            <div className="space-y-2">
+              {snapshot.priorityBoard.slice(0, 8).map((item) => (
+                <button
+                  key={`priority-${item.ticker}-${item.priorityState}`}
+                  type="button"
+                  onClick={() => setSelectedCase(candidateFromPriority(snapshot, item))}
+                  className="grid w-full cursor-pointer gap-2 rounded border border-zinc-800 bg-zinc-950/70 p-3 text-left text-sm transition hover:border-cyan-800 hover:bg-zinc-900/80 md:grid-cols-[120px_130px_1fr_90px] md:items-center"
+                >
+                  <div>
+                    <div className="font-semibold text-zinc-100">{item.ticker}</div>
+                    <div className="text-[11px] text-zinc-600">{item.company}</div>
+                  </div>
+                  <span className={`w-fit rounded border px-2 py-0.5 text-[10px] font-semibold ${priorityStateClass(item.priorityState)}`}>
+                    {priorityLabel(item.priorityState)}
+                  </span>
+                  <div>
+                    <div className="text-zinc-200">{item.action}</div>
+                    <div className="line-clamp-1 text-xs text-zinc-500">
+                      {signalFreshnessLabel(item.signalQuality)} · {narrativeLabel(item.narrativeTriggerType)} · {item.freshnessMinutes}m sedan bekräftelse
+                    </div>
+                  </div>
+                  <div className="text-xs text-zinc-500">
+                    <div>{item.urgencyScore}/100</div>
+                    <div>conf {item.confidence}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-zinc-400">Priority Board saknar signaler i senaste snapshot.</p>
+          )}
+        </Section>
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Section title="Active Today">
+            {snapshot.candidates.filter((candidate) => candidate.isActiveToday).slice(0, 6).length > 0 ? (
+              <div className="space-y-2">
+                {snapshot.candidates.filter((candidate) => candidate.isActiveToday).slice(0, 6).map((candidate) => (
+                  <MiniCase key={`active-today-${candidate.ticker}`} candidate={candidate} onOpen={setSelectedCase} />
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-zinc-400">Inga färska same-day aktiva case just nu.</p>
+            )}
+          </Section>
+
+          <Section title="Recently Active / Market Memory">
+            {snapshot.priorityBoard.filter((item) => item.freshnessStatus !== "activeToday").slice(0, 6).length > 0 ? (
+              <div className="space-y-2">
+                {snapshot.priorityBoard.filter((item) => item.freshnessStatus !== "activeToday").slice(0, 6).map((item) => (
+                  <button
+                    key={`memory-${item.ticker}-${item.priorityState}`}
+                    type="button"
+                    onClick={() => setSelectedCase(candidateFromPriority(snapshot, item))}
+                    className="w-full rounded border border-zinc-800 bg-zinc-950/60 p-3 text-left text-sm transition hover:border-cyan-800"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-zinc-100">{item.ticker}</span>
+                      <span className="text-xs text-zinc-500">{freshnessLabel(item.freshnessStatus)}</span>
+                    </div>
+                    <p className="mt-1 line-clamp-2 text-xs text-zinc-400">{item.whyNow}</p>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-zinc-400">Ingen separat market memory att visa.</p>
+            )}
+          </Section>
+        </div>
+
         <Section title="Live Edge Board">
           <div className="space-y-2">
             {snapshot.candidates.length > 0 ? snapshot.candidates.slice(0, 10).map((candidate) => (
@@ -561,6 +844,33 @@ export function TerminalV2Shell() {
             </div>
           ) : (
             <p className="text-sm text-zinc-400">Inga tracked tickers i snapshoten.</p>
+          )}
+        </Section>
+
+        <Section title="Position Management">
+          {snapshot.positionManagement.length > 0 ? (
+            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+              {snapshot.positionManagement.slice(0, 12).map((item) => (
+                <div key={`position-${item.ticker}`} className="rounded border border-zinc-800 bg-zinc-950/60 p-3 text-sm">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <div className="font-semibold text-zinc-100">{item.ticker}</div>
+                      <div className="text-[11px] text-zinc-600">{item.company}</div>
+                    </div>
+                    <span className={`rounded border px-2 py-0.5 text-[10px] ${positionStateClass(item.state)}`}>{item.state}</span>
+                  </div>
+                  <p className="mt-2 text-xs font-semibold leading-5 text-zinc-200">{item.decisionLabel ?? item.decision}</p>
+                  <p className="mt-1 line-clamp-2 text-xs leading-5 text-zinc-400">{item.reason ?? item.why}</p>
+                  <p className="mt-2 text-[11px] text-zinc-500">
+                    Trend: {trendSymbol(item.confidenceTrend)} · confidence {item.confidence} · risk {item.risk ?? "-"}
+                  </p>
+                  <p className="mt-1 text-[11px] text-zinc-600">Nästa: {item.suggestedAction ?? "wait"} · {item.sourceStatus ?? item.source}</p>
+                  <p className="mt-1 line-clamp-2 text-[11px] text-zinc-600">Ändrat: {item.whatChanged}</p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-zinc-400">Inga position-management beslut i snapshoten.</p>
           )}
         </Section>
 
