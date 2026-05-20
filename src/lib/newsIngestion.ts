@@ -1,3 +1,4 @@
+import { getSwedishEquityUniverse } from "@/lib/market/swedishEquityUniverse";
 import type { RawHeadlineInput } from "@/lib/newsTriggerParsing";
 
 export interface RawNewsHeadline extends RawHeadlineInput {
@@ -165,13 +166,88 @@ function categoryGuess(headline: string, explicitCategory?: string) {
   return "nyhet";
 }
 
+function normalizeNordicTicker(value: string) {
+  return value
+    .replace(/\.(ST|SS|CO|HE|OL)$/i, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toUpperCase();
+}
+
+function normalizeCompanyName(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/\(publ\)/g, "")
+    .replace(/\bab\b/g, "")
+    .replace(/\bgroup\b/g, "")
+    .replace(/\bholding(s)?\b/g, "")
+    .replace(/\bplc\b/g, "")
+    .replace(/[^a-z0-9\u00e5\u00e4\u00f6\u00e6\u00f8\u00fc\u00e9 ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+const SWEDISH_UNIVERSE = getSwedishEquityUniverse();
+
+const MANUAL_NORDIC_ALIASES: Array<{ ticker: string; company: string; alias: string }> = [
+  { ticker: "SHT", company: "Smart High Tech AB", alias: "smart high tech" },
+  { ticker: "SUS", company: "Surgical Science Sweden AB", alias: "surgical science" },
+  { ticker: "MAVEN", company: "Maven Wireless Sweden AB", alias: "maven wireless" },
+  { ticker: "SIVE", company: "Sivers Semiconductors AB", alias: "sivers semiconductors" },
+  { ticker: "AAC", company: "AAC Clyde Space AB", alias: "aac clyde space" },
+  { ticker: "CLAV", company: "Clavister Holding AB", alias: "clavister" },
+  { ticker: "ASTOR", company: "Astor Group AB", alias: "astor" },
+  { ticker: "FREJA", company: "Freja eID Group AB", alias: "freja eid" },
+  { ticker: "PLEJD", company: "Plejd AB", alias: "plejd" },
+  { ticker: "WYLD", company: "Wyld Networks AB", alias: "wyld networks" },
+  { ticker: "KVIX", company: "Kvix AB", alias: "kvix" },
+  { ticker: "GOMX", company: "GomSpace Group AB", alias: "gomspace" },
+  { ticker: "NEXAM", company: "Nexam Chemical Holding AB", alias: "nexam chemical" },
+  { ticker: "MILDEF", company: "MilDef Group AB", alias: "mildef" },
+  { ticker: "YUBICO", company: "Yubico AB", alias: "yubico" },
+];
+
+const NORDIC_COMPANY_ALIASES = [
+  ...MANUAL_NORDIC_ALIASES,
+  ...SWEDISH_UNIVERSE.flatMap((entry) => {
+    const ticker = normalizeNordicTicker(entry.ticker);
+    return [
+      { ticker: entry.ticker, company: entry.companyName, alias: normalizeCompanyName(entry.companyName) },
+      { ticker: entry.ticker, company: entry.companyName, alias: normalizeCompanyName(ticker) },
+      { ticker: entry.ticker, company: entry.companyName, alias: normalizeCompanyName(ticker.replace(/\s[AB]$/, "")) },
+    ];
+  }),
+].filter((entry, index, array) =>
+  entry.alias.length >= 3 &&
+  array.findIndex((candidate) => candidate.ticker === entry.ticker && candidate.alias === entry.alias) === index
+);
+
+function resolveNordicCompany(headline: string): { ticker?: string; company?: string } {
+  const tickerMatch = headline.match(/\b[A-ZÅÄÖ]{2,8}(?:\s[AB])?(?:\.(?:ST|SS|CO|HE|OL))?\b/g)
+    ?.map(normalizeNordicTicker)
+    .find((candidate) => SWEDISH_UNIVERSE.some((entry) => entry.ticker === candidate));
+  if (tickerMatch) {
+    const entry = SWEDISH_UNIVERSE.find((candidate) => candidate.ticker === tickerMatch);
+    return { ticker: tickerMatch, company: entry?.companyName };
+  }
+  const normalized = normalizeCompanyName(headline);
+  const aliasMatch = NORDIC_COMPANY_ALIASES
+    .filter((entry) => normalized.includes(entry.alias))
+    .sort((a, b) => b.alias.length - a.alias.length)[0];
+  return aliasMatch ? { ticker: aliasMatch.ticker, company: aliasMatch.company } : {};
+}
+
 function tickerGuess(headline: string) {
-  const match = headline.match(/\b[A-ZÅÄÖ]{2,6}(?:\s[AB])?\b/);
-  return match?.[0] && !["Q1", "Q2", "Q3", "Q4", "CEO", "FDA", "GMP", "CE"].includes(match[0]) ? match[0] : undefined;
+  return resolveNordicCompany(headline).ticker;
 }
 
 function looksTradableHeadline(headline: string, category?: string) {
   const text = `${headline} ${category ?? ""}`.toLowerCase();
+  const hasCompany = Boolean(tickerGuess(headline));
+  const broadMarketNoise = /b\u00f6rsen|omx|index|futures|r\u00e4nta|inflation|fed|ecb|wall street|asienb\u00f6rser|geopolitik|olja|guld|dollar|kronan|valuta|terminer|usa-b\u00f6rs|europab\u00f6rs|stockholmsb\u00f6rsen/.test(text);
+  const genericFeedNoise = /morgonrapport|b\u00f6rs\u00f6ppning|b\u00f6rsst\u00e4ngning|veckan som kommer|dagens aktier|marknadskommentar|teknisk analys|podcast|webbtv|lista:|kalender/.test(text);
+  if ((broadMarketNoise || genericFeedNoise) && !hasCompany) return false;
+  if (!hasCompany && !/mfn|cision|bequoted|pressmeddelande/.test(text)) return false;
   const catalyst = /order|kontrakt|ramavtal|avtal|partner|samarbete|finansiering|emission|rapport|q[1-4]\b|vinst|guidance|prognos|insider|köper aktier|säljer aktier|fda|ce\b|gmp|tillstånd|certifikat|produktion|kapacitet|förvärv|bud|uppköp|notering|pressmeddelande/.test(text);
   const broadNoise = /börsen|omx|index|futures|ränta|inflation|fed|ecb|wall street|asienbörser|geopolitik|olja|guld|dollar|kronan/.test(text);
   if (catalyst) return true;
@@ -208,9 +284,11 @@ function parseRssOrAtom(xml: string, sourceUrl: string): RawNewsHeadline[] {
       const publishedAt = tagValue(item, "pubDate") ?? tagValue(item, "published") ?? tagValue(item, "updated") ?? nowIso();
       const category = categoryGuess(headline, tagValue(item, "category"));
       if (!looksTradableHeadline(headline, category)) return null;
+      const resolvedCompany = resolveNordicCompany(headline);
       return {
         id: `${source}-${index}-${headline.slice(0, 40)}`,
-        ticker: tickerGuess(headline),
+        ticker: resolvedCompany.ticker,
+        company: resolvedCompany.company,
         headline,
         source,
         publishedAt: new Date(publishedAt).toISOString(),
@@ -391,18 +469,31 @@ export async function fetchLatestNewsHeadlines(provider: NewsProvider = manualMo
 
 export async function fetchLatestNewsHeadlinesWithFallback(): Promise<NewsIngestionResult> {
   const result = await fetchLatestNewsHeadlines();
+  if (result.mode === "mock" && !result.isConfigured) {
+    return {
+      providerName: "News provider disabled",
+      mode: "disabled",
+      isLive: false,
+      isConfigured: false,
+      lastFetchAt: nowIso(),
+      error: "News provider not configured: NEWS_RSS_FEEDS is missing",
+      headlineCount: 0,
+      feedHealth: result.feedHealth,
+      generatedAt: nowIso(),
+      headlines: [],
+    };
+  }
   if (result.headlines.length > 0 || result.mode !== "rss" || result.isConfigured) return result;
-  const fallback = await manualMockNewsProvider.fetchLatestHeadlines();
   return {
-    providerName: manualMockNewsProvider.name,
-    mode: fallback.length > 0 ? "mock" : "disabled",
+    providerName: "News provider disabled",
+    mode: "disabled",
     isLive: false,
     isConfigured: false,
     lastFetchAt: nowIso(),
     error: result.error ? `RSS failed/empty: ${result.error}` : "News provider not configured: NEWS_RSS_FEEDS is missing",
-    headlineCount: fallback.length,
+    headlineCount: 0,
     feedHealth: result.feedHealth,
     generatedAt: nowIso(),
-    headlines: fallback,
+    headlines: [],
   };
 }

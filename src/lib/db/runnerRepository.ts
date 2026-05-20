@@ -8,6 +8,7 @@ export interface RunnerCaseSnapshot {
   risk: number;
   source: string;
   rawPayload: unknown;
+  createdAt?: string | null;
 }
 
 export interface RankingChange {
@@ -140,6 +141,7 @@ export async function getLatestCaseStateSnapshots(limit = 200): Promise<RunnerCa
       risk: Number(row.risk ?? 0),
       source: row.source,
       rawPayload: row.raw_payload,
+      createdAt: row.created_at,
     });
   }
   return snapshots;

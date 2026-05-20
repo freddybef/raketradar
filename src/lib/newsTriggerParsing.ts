@@ -76,6 +76,14 @@ const MANUAL_COMPANY_ALIASES: Array<{ pattern: RegExp; ticker: string; company: 
   { pattern: /\byubico\b|\byubi\b/i, ticker: "YUBICO", company: "Yubico AB", marketCapSensitivity: 58 },
   { pattern: /\bmildef\b|\bmil def\b/i, ticker: "MILDEF", company: "MilDef Group AB", marketCapSensitivity: 58 },
   { pattern: /\baac clyde\b|\baac clyde space\b|\baccon\b|\baac\b/i, ticker: "AAC", company: "AAC Clyde Space AB", marketCapSensitivity: 82 },
+  { pattern: /\bmaven wireless\b|\bmaven\b/i, ticker: "MAVEN", company: "Maven Wireless Sweden AB", marketCapSensitivity: 70 },
+  { pattern: /\bsmart high tech\b|\bsmart high-tech\b/i, ticker: "SHT", company: "Smart High Tech AB", marketCapSensitivity: 76 },
+  { pattern: /\bfreja eid\b|\bfreja e-id\b|\bfreja\b/i, ticker: "FREJA", company: "Freja eID Group AB", marketCapSensitivity: 70 },
+  { pattern: /\bclavister\b/i, ticker: "CLAV", company: "Clavister Holding AB", marketCapSensitivity: 82 },
+  { pattern: /\bastor group\b|\bastor\b/i, ticker: "ASTOR", company: "Astor Group AB", marketCapSensitivity: 86 },
+  { pattern: /\bplejd\b/i, ticker: "PLEJD", company: "Plejd AB", marketCapSensitivity: 70 },
+  { pattern: /\bwyld networks\b|\bwyld\b/i, ticker: "WYLD", company: "Wyld Networks AB", marketCapSensitivity: 84 },
+  { pattern: /\bnosa plugs\b|\bnosa\b/i, ticker: "NOSA", company: "Nosa Plugs AB", marketCapSensitivity: 84 },
 ];
 
 function escapeRegExp(value: string) {
@@ -92,7 +100,8 @@ function companyAliasPattern(companyName: string, ticker: string) {
     .replace(/\(publ\)/gi, "")
     .replace(/\s+/g, " ")
     .trim();
-  const alternatives = [ticker, companyName, compactName]
+  const tickerWithoutSuffix = ticker.replace(/\s[AB]$/i, "");
+  const alternatives = [ticker, tickerWithoutSuffix, companyName, compactName]
     .map((item) => item.trim())
     .filter((item, index, array) => item.length >= 3 && array.indexOf(item) === index)
     .map(escapeRegExp);
@@ -118,6 +127,14 @@ function normalize(value: string) {
   return value.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
+function normalizeTicker(value: string) {
+  return value
+    .replace(/\.(ST|SS|CO|HE|OL)$/i, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toUpperCase();
+}
+
 function dateKey(date: Date) {
   return new Intl.DateTimeFormat("sv-SE", {
     timeZone: "Europe/Stockholm",
@@ -135,15 +152,20 @@ function isFreshToday(publishedAt: string) {
 
 function resolveCompany(input: RawHeadlineInput) {
   if (input.ticker || input.company) {
-    const ticker = input.ticker?.toUpperCase().trim() ?? null;
+    const ticker = input.ticker ? normalizeTicker(input.ticker) : null;
     const universeMatch = ticker ? getSwedishEquityUniverse().find((entry) => entry.ticker === ticker) : null;
+    const companyMatch = input.company
+      ? COMPANY_ALIASES.find((entry) => entry.pattern.test(input.company ?? ""))
+      : null;
     return {
-      ticker,
-      company: input.company?.trim() ?? universeMatch?.companyName ?? null,
+      ticker: ticker ?? companyMatch?.ticker ?? null,
+      company: input.company?.trim() ?? universeMatch?.companyName ?? companyMatch?.company ?? null,
       marketCapSensitivity: universeMatch?.marketCapBucket === "micro" ? 82 : universeMatch?.marketCapBucket === "small" ? 72 : 60,
     };
   }
-  const match = COMPANY_ALIASES.find((entry) => entry.pattern.test(input.headline));
+  const match = COMPANY_ALIASES
+    .filter((entry) => entry.pattern.test(input.headline))
+    .sort((a, b) => b.company.length - a.company.length)[0];
   return {
     ticker: match?.ticker ?? null,
     company: match?.company ?? null,
@@ -161,6 +183,17 @@ function classifyTrigger(headline: string): {
 } {
   const text = normalize(headline);
   const tags: string[] = [];
+  if (/market signal|börsen|omx|index|ränta|inflation|usa|futures|makro|geopolitik|fed|ecb|olja|guld|dollar|kronan|wall street|asienbörser|morgonrapport|börsöppning|börsstängning|marknadskommentar|teknisk analys|podcast|webbtv|kalender/.test(text)) {
+    tags.push("macro");
+    return {
+      triggerType: "MACRO_NOISE",
+      narrativeTriggerType: "UNKNOWN",
+      thematicTags: tags,
+      baseStrength: 12,
+      secondDerivativeScore: 5,
+      summary: "Makro/general headline. Bra kontext men ingen bolagsspecifik Nordic repricing-trigger.",
+    };
+  }
   if (/gmp|tillstånd|fda|ce\b|godkänn|myndighet|regulator|certifikat/.test(text)) {
     tags.push("regulatory", "commercialization");
     return {
@@ -331,23 +364,25 @@ function verificationState(input: {
   ticker: string | null;
   isFreshToday: boolean;
 }): TriggerVerificationState {
+  if (!input.ticker) return "PRICE_ONLY";
+  if (!input.isFreshToday) return "UNVERIFIED";
   if (input.triggerType === "SECTOR_THEME") return "THEMATIC";
   if (input.triggerType === "UNKNOWN" || input.triggerType === "ANALYST_TARGET") return input.ticker ? "UNVERIFIED" : "PRICE_ONLY";
-  if (!input.isFreshToday) return "UNVERIFIED";
-  if (!input.ticker && input.narrativeTriggerType === "UNKNOWN") return "PRICE_ONLY";
   return "VERIFIED";
 }
 
 function isTradableNordicTrigger(trigger: NewsTrigger) {
   if (trigger.triggerType === "MACRO_NOISE") return false;
+  if (!trigger.ticker) return false;
+  if (!trigger.isFreshToday) return false;
   if (trigger.triggerType === "UNKNOWN") return Boolean(trigger.ticker) && trigger.isFreshToday && trigger.triggerStrength >= 45;
   if (trigger.triggerType === "ANALYST_TARGET") return Boolean(trigger.ticker) && trigger.isFreshToday && trigger.repricingPotential >= 45;
   if (trigger.triggerType === "SECTOR_THEME") return Boolean(trigger.ticker) && trigger.isFreshToday && trigger.repricingPotential >= 55;
-  if (!trigger.ticker && trigger.triggerStrength < 58) return false;
-  return trigger.isFreshToday || Boolean(trigger.ticker) || trigger.triggerStrength >= 65;
+  return trigger.triggerStrength >= 45;
 }
 
 export function parseNewsTriggers(rawHeadlines: Array<string | RawHeadlineInput>): NewsTrigger[] {
+  const seen = new Set<string>();
   return asArray(rawHeadlines)
     .map((input, index) => {
       const publishedAt = input.publishedAt ?? new Date().toISOString();
@@ -391,6 +426,12 @@ export function parseNewsTriggers(rawHeadlines: Array<string | RawHeadlineInput>
         triggerVerificationState,
         summary: classified.summary,
       };
+    })
+    .filter((trigger) => {
+      const key = `${trigger.ticker ?? "NO_TICKER"}|${normalize(trigger.headline).replace(/[^\p{L}\p{N}\s]/gu, "").slice(0, 96)}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
     })
     .filter(isTradableNordicTrigger)
     .sort((a, b) => b.repricingPotential - a.repricingPotential || b.triggerStrength - a.triggerStrength);
