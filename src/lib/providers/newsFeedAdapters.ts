@@ -44,6 +44,19 @@ const adapterDefinitions = [
   ["Generic News", "NEWS_FEED_URL"],
 ] as const;
 
+const defaultNordicRssAdapters = [
+  ["EFN", "https://www.efn.se/rss"],
+  ["Placera default", "https://www.placera.se/placera.rss.xml"],
+  ["Avanza Placera default", "https://www.avanza.se/placera/redaktionellt/alla-nyheter.rss"],
+  ["BeQuoted default", "https://www.bequoted.com/rss"],
+  ["Spotlight default", "https://spotlightstockmarket.com/sv/rss/pressmeddelanden"],
+  ["NGM default", "https://www.ngm.se/rss/press-releases"],
+] as const;
+
+function defaultRssAdaptersEnabled() {
+  return process.env.RAKETRADAR_DISABLE_DEFAULT_RSS_FEEDS !== "1";
+}
+
 function decodeXml(value: string) {
   return value
     .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
@@ -171,7 +184,7 @@ function toStockNews(items: ReturnType<typeof rankNewsFreshness>): StockNews[] {
 }
 
 export function getNewsFeedAdapters(): NewsFeedAdapter[] {
-  return adapterDefinitions.map(([source, envVar]) => {
+  const envAdapters = adapterDefinitions.map(([source, envVar]) => {
     const url = process.env[envVar];
     return {
       source,
@@ -179,6 +192,23 @@ export function getNewsFeedAdapters(): NewsFeedAdapter[] {
       url,
       enabled: Boolean(url),
     };
+  });
+
+  const defaultAdapters: NewsFeedAdapter[] = defaultRssAdaptersEnabled()
+    ? defaultNordicRssAdapters.map(([source, url]) => ({
+        source,
+        envVar: "DEFAULT_NORDIC_RSS_FEEDS",
+        url,
+        enabled: true,
+      }))
+    : [];
+
+  const seen = new Set<string>();
+  return [...envAdapters, ...defaultAdapters].filter((adapter) => {
+    const key = adapter.url ?? `${adapter.source}:${adapter.envVar}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
   });
 }
 

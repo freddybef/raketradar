@@ -89,6 +89,61 @@ export interface AutonomousDiscoveryResult {
   missedMovers: MissedMover[];
 }
 
+const DEFAULT_ROCKET_DISCOVERY_UNIVERSE: SwedishEquityUniverseEntry[] = [
+  { ticker: "VIVE", companyName: "Vivesto AB", exchange: "First North", sector: "Biotech", marketCapBucket: "micro", liquidityBucket: "thin", verified: true },
+  { ticker: "OBDU PREF B", companyName: "Obducat PREF B", exchange: "Nordic SME", sector: "Semiconductor / industrial tech", marketCapBucket: "micro", liquidityBucket: "thin", verified: true },
+  { ticker: "OBDU B", companyName: "Obducat B", exchange: "Nordic SME", sector: "Semiconductor / industrial tech", marketCapBucket: "micro", liquidityBucket: "thin", verified: true },
+  { ticker: "SMOL", companyName: "Smoltek Nanotech Holding AB", exchange: "Spotlight", sector: "Deeptech / semiconductor", marketCapBucket: "micro", liquidityBucket: "thin", verified: true },
+  { ticker: "XMR", companyName: "XMReality AB", exchange: "First North", sector: "Software", marketCapBucket: "micro", liquidityBucket: "thin", verified: true },
+  { ticker: "XOMA", companyName: "Xoma AB", exchange: "Nordic SME", sector: "Biotech", marketCapBucket: "micro", liquidityBucket: "thin", verified: true },
+  { ticker: "EBM", companyName: "Eurobattery Minerals AB", exchange: "Nordic SME", sector: "Battery / mining", marketCapBucket: "micro", liquidityBucket: "thin", verified: true },
+  { ticker: "FSPORT", companyName: "FSport AB", exchange: "Spotlight", sector: "Gaming / betting", marketCapBucket: "micro", liquidityBucket: "thin", verified: true },
+  { ticker: "ABSL", companyName: "Absolicon Solar Collector AB", exchange: "Spotlight", sector: "Energy", marketCapBucket: "micro", liquidityBucket: "thin", verified: true },
+  { ticker: "FLUI", companyName: "Fluicell AB", exchange: "Spotlight", sector: "Biotech", marketCapBucket: "micro", liquidityBucket: "thin", verified: true },
+  { ticker: "SPRINT", companyName: "Sprint Bioscience AB", exchange: "First North", sector: "Biotech", marketCapBucket: "micro", liquidityBucket: "thin", verified: true },
+  { ticker: "IRIS", companyName: "Irisity AB", exchange: "First North", sector: "AI / security", marketCapBucket: "micro", liquidityBucket: "thin", verified: true },
+  { ticker: "BUSER", companyName: "Bambuser AB", exchange: "First North", sector: "Software", marketCapBucket: "small", liquidityBucket: "normal", verified: true },
+  { ticker: "IMPC", companyName: "Impact Coatings AB", exchange: "First North", sector: "Industrial tech", marketCapBucket: "micro", liquidityBucket: "thin", verified: true },
+  { ticker: "SIMRIS B", companyName: "Simris Group B", exchange: "Spotlight", sector: "Biotech / consumer health", marketCapBucket: "micro", liquidityBucket: "thin", verified: true },
+  { ticker: "TAGM B", companyName: "TagMaster B", exchange: "First North", sector: "Industrial tech", marketCapBucket: "micro", liquidityBucket: "thin", verified: true },
+  { ticker: "ADVT", companyName: "Adverty AB", exchange: "Spotlight", sector: "Gaming / adtech", marketCapBucket: "micro", liquidityBucket: "thin", verified: true },
+  { ticker: "HEXICON", companyName: "Hexicon AB", exchange: "First North", sector: "Energy", marketCapBucket: "micro", liquidityBucket: "thin", verified: true },
+  { ticker: "BEAMMW B", companyName: "BeammWave B", exchange: "First North", sector: "Semiconductor / telecom", marketCapBucket: "micro", liquidityBucket: "thin", verified: true },
+  { ticker: "FERRO", companyName: "Ferroamp AB", exchange: "First North", sector: "Energy storage", marketCapBucket: "small", liquidityBucket: "normal", verified: true },
+  { ticker: "PHOCA", companyName: "Photocat A/S", exchange: "First North", sector: "Cleantech", marketCapBucket: "micro", liquidityBucket: "thin", verified: true },
+  { ticker: "RESP", companyName: "Respiratorius AB", exchange: "Spotlight", sector: "Biotech", marketCapBucket: "micro", liquidityBucket: "thin", verified: true },
+  { ticker: "NXTCL", companyName: "NextCell Pharma AB", exchange: "First North", sector: "Biotech", marketCapBucket: "micro", liquidityBucket: "thin", verified: true },
+  { ticker: "SCIB", companyName: "SciBase Holding AB", exchange: "First North", sector: "Medtech", marketCapBucket: "micro", liquidityBucket: "thin", verified: true },
+  { ticker: "BIOWKS", companyName: "Bio-Works Technologies AB", exchange: "First North", sector: "Biotech supplies", marketCapBucket: "micro", liquidityBucket: "thin", verified: true },
+  { ticker: "UNIBAP", companyName: "Unibap Space Solutions AB", exchange: "First North", sector: "Space / AI", marketCapBucket: "micro", liquidityBucket: "thin", verified: true },
+];
+
+function envExtraTickers() {
+  return (process.env.RAKETRADAR_EXTRA_DISCOVERY_TICKERS ?? process.env.DISCOVERY_EXTRA_TICKERS ?? "")
+    .split(",")
+    .map((ticker) => ticker.trim().toUpperCase())
+    .filter(Boolean);
+}
+
+function discoveryExpansionUniverse(extraTickers: string[] = []) {
+  const byTicker = new Map<string, SwedishEquityUniverseEntry>();
+  DEFAULT_ROCKET_DISCOVERY_UNIVERSE.forEach((entry) => byTicker.set(entry.ticker.toUpperCase(), entry));
+  [...extraTickers, ...envExtraTickers()].forEach((ticker) => {
+    const key = ticker.toUpperCase().trim();
+    if (!key || byTicker.has(key)) return;
+    byTicker.set(key, {
+      ticker: key,
+      companyName: key,
+      exchange: "Sweden",
+      sector: "manual discovery expansion",
+      marketCapBucket: "small",
+      liquidityBucket: "normal",
+      verified: true,
+    });
+  });
+  return [...byTicker.values()];
+}
+
 function clamp(value: number, min = 0, max = 100) {
   return Math.max(min, Math.min(max, Math.round(value)));
 }
@@ -278,15 +333,7 @@ export async function runAutonomousDiscoveryScan(input: {
   provider: LiveMarketReactionProvider;
   extraTickers?: string[];
 }): Promise<AutonomousDiscoveryResult> {
-  const extraEntries = (input.extraTickers ?? []).map((ticker): SwedishEquityUniverseEntry => ({
-    ticker: ticker.toUpperCase().trim(),
-    companyName: ticker.toUpperCase().trim(),
-    exchange: "Sweden",
-    sector: "manual",
-    marketCapBucket: "small",
-    liquidityBucket: "normal",
-    verified: true,
-  })).filter((entry) => entry.ticker.length > 0);
+  const extraEntries = discoveryExpansionUniverse(input.extraTickers);
   const merged = new Map<string, SwedishEquityUniverseEntry>();
   [...getSwedishEquityUniverse().filter((entry) => entry.verified), ...extraEntries].forEach((entry) => merged.set(entry.ticker, entry));
   const universe = [...merged.values()];
