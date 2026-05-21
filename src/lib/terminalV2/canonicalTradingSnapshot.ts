@@ -1376,6 +1376,39 @@ function sortCandidates(a: TradingCandidate, b: TradingCandidate) {
   return convictionScore(b) - convictionScore(a) || order[a.action] - order[b.action] || b.score - a.score || b.continuation - a.continuation;
 }
 
+function continuationQualityScore(candidate: TradingCandidate) {
+  const verifiedQuality =
+    candidate.triggerVerificationState === "VERIFIED" ||
+    candidate.triggerVerificationState === "THEMATIC" ||
+    candidate.catalystBoostApplied;
+
+  const structure =
+    Math.min(28, Math.max(0, candidate.continuation - 55) * 0.8) +
+    Math.min(18, Math.max(0, candidate.confirmationCount - 2) * 6) +
+    Math.min(18, Math.max(0, candidate.marketAttentionShift - 45) * 0.35);
+
+  const catalyst = verifiedQuality ? 18 : candidate.narrativeTriggerType !== "UNKNOWN" ? 8 : 0;
+
+  const squeezePenalty =
+    candidate.catalystType === "short_squeeze" &&
+    candidate.triggerVerificationState === "PRICE_ONLY" &&
+    candidate.narrativeTriggerType === "UNKNOWN"
+      ? 18
+      : 0;
+
+  const afterClosePenalty = candidate.freshnessStatus === "afterClose" && !verifiedQuality ? 8 : 0;
+  const fadePenalty = Math.max(0, candidate.risk - 45) * 0.45 + candidate.decayScore * 0.25;
+
+  return Math.max(0, Math.min(100, Math.round(structure + catalyst - squeezePenalty - afterClosePenalty - fadePenalty)));
+}
+
+function isLowQualitySqueeze(candidate: TradingCandidate) {
+  return candidate.catalystType === "short_squeeze" &&
+    candidate.triggerVerificationState === "PRICE_ONLY" &&
+    candidate.narrativeTriggerType === "UNKNOWN" &&
+    continuationQualityScore(candidate) < 60;
+}
+
 function convictionScore(candidate: TradingCandidate) {
   const freshnessBoost =
     candidate.isActiveToday
@@ -1385,6 +1418,7 @@ function convictionScore(candidate: TradingCandidate) {
         : candidate.freshnessStatus === "recentMemory"
           ? -28
           : -44;
+
   const qualityBoost: Record<SignalQuality, number> = {
     FRESH_IGNITION: 24,
     ACTIVE_CONTINUATION: 22,
@@ -1394,12 +1428,14 @@ function convictionScore(candidate: TradingCandidate) {
     EXHAUSTED: -30,
     DEAD: -42,
   };
+
   const verificationBoost: Record<TriggerVerificationState, number> = {
     VERIFIED: candidate.catalystBoostApplied ? 16 : 2,
     THEMATIC: 4,
     UNVERIFIED: -4,
     PRICE_ONLY: candidate.rvol >= 2.8 && candidate.continuation >= 75 ? -2 : -14,
   };
+
   const phaseBoost: Record<RepricingPhase, number> = {
     REPRICING: 16,
     AWAKENING: 8,
@@ -1407,12 +1443,18 @@ function convictionScore(candidate: TradingCandidate) {
     EXHAUSTION: -24,
     DEAD: -36,
   };
+
   const participation =
     Math.min(20, Math.max(0, candidate.rvol - 1.25) * 12) +
     Math.min(16, Math.max(0, candidate.marketAttentionShift - 45) * 0.22);
+
   const structure =
     Math.min(22, Math.max(0, candidate.continuation - 55) * 0.75) +
     Math.min(12, Math.max(0, candidate.confirmationCount - 2) * 5);
+
+  const continuationQuality = continuationQualityScore(candidate);
+  const squeezeQualityPenalty = isLowQualitySqueeze(candidate) ? 20 : 0;
+
   return Math.round(
     candidate.score * 0.35 +
       candidate.discoveryScore * 0.22 +
@@ -1421,12 +1463,13 @@ function convictionScore(candidate: TradingCandidate) {
       phaseBoost[candidate.repricingPhase] +
       verificationBoost[candidate.triggerVerificationState] +
       participation +
-      structure -
+      structure +
+      continuationQuality * 0.18 -
+      squeezeQualityPenalty -
       candidate.risk * 0.22 -
       candidate.decayScore * 0.42,
   );
 }
-
 function isTopSetup(candidate: TradingCandidate) {
   const strongSignal = candidate.signalQuality === "FRESH_IGNITION" || candidate.signalQuality === "ACTIVE_CONTINUATION";
   const realTrigger =
@@ -1444,7 +1487,9 @@ function isTopSetup(candidate: TradingCandidate) {
     candidate.confirmationCount >= 3 &&
     candidate.marketAttentionShift >= 48 &&
     realTrigger &&
-    convictionScore(candidate) >= 72;
+continuationQualityScore(candidate) >= 60 &&
+!isLowQualitySqueeze(candidate) &&
+convictionScore(candidate) >= 72;
 }
 
 function isWatchlistSetup(candidate: TradingCandidate) {
