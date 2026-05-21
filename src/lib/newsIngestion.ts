@@ -120,24 +120,11 @@ export const manualMockNewsProvider: NewsProvider = {
   },
 };
 
-const DEFAULT_NORDIC_RSS_FEEDS = [
-  "https://www.efn.se/rss",
-  "https://www.placera.se/placera.rss.xml",
-  "https://www.avanza.se/placera/redaktionellt/alla-nyheter.rss",
-  "https://www.bequoted.com/rss",
-  "https://spotlightstockmarket.com/sv/rss/pressmeddelanden",
-  "https://www.ngm.se/rss/press-releases",
-];
-
 function splitFeedEnv(value?: string) {
   return (value ?? "")
     .split(/[\n,;]+/)
     .map((url) => url.trim())
     .filter(Boolean);
-}
-
-function defaultRssFeedsEnabled() {
-  return process.env.RAKETRADAR_DISABLE_DEFAULT_RSS_FEEDS !== "1";
 }
 
 function rssFeedUrls() {
@@ -146,7 +133,6 @@ function rssFeedUrls() {
     ...splitFeedEnv(process.env.NEWS_FEED_URLS),
     ...splitFeedEnv(process.env.NEWS_FEED_URL),
     ...splitFeedEnv(process.env.RAKETRADAR_NEWS_RSS_FEEDS),
-    ...(defaultRssFeedsEnabled() ? DEFAULT_NORDIC_RSS_FEEDS : []),
   ])];
 }
 
