@@ -138,7 +138,7 @@ export async function calculateLiveMarketReactions(input: {
       const latest = hasIntraday ? intraday.at(-1) : daily.at(-1);
       const previous = hasIntraday ? intraday.at(-2) : daily.at(-2);
       if (!first || !latest || !previous) return null;
-      const previousClose = first.referencePreviousClose ?? daily.at(-2)?.close ?? first.open;
+      const previousClose = daily.at(-2)?.close ?? first.referencePreviousClose ?? first.open;
       if (!latest || !previous) return null;
 
       const intradayVolume = hasIntraday ? intraday.reduce((sum, bar) => sum + (bar.volume ?? 0), 0) : (latest.volume ?? 0);

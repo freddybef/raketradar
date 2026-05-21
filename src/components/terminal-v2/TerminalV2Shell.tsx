@@ -18,6 +18,8 @@ interface TradingCandidate {
   risk: number;
   rvol: number;
   movePct: number;
+  score?: number;
+  confidence?: number;
   dayChangePct?: number;
   intradayMomentumPct?: number;
   source: string;
@@ -222,6 +224,65 @@ function num(value: number, decimals = 1) {
   return Number.isFinite(value) ? value.toFixed(decimals) : "0.0";
 }
 
+function setupConviction(candidate: TradingCandidate) {
+  const freshness =
+    candidate.isActiveToday
+      ? 18
+      : candidate.freshnessStatus === "premarketContext" || candidate.freshnessStatus === "afterClose"
+        ? 3
+        : candidate.freshnessStatus === "recentMemory"
+          ? -28
+          : -44;
+  const quality: Record<NonNullable<TradingCandidate["signalQuality"]>, number> = {
+    FRESH_IGNITION: 24,
+    ACTIVE_CONTINUATION: 22,
+    RECLAIM_SETUP: 10,
+    EARLY_WATCH: 4,
+    STALLED: -18,
+    EXHAUSTED: -30,
+    DEAD: -42,
+  };
+  const verification: Record<NonNullable<TradingCandidate["triggerVerificationState"]>, number> = {
+    VERIFIED: 16,
+    THEMATIC: 7,
+    UNVERIFIED: -4,
+    PRICE_ONLY: candidate.rvol >= 2.8 && candidate.continuation >= 78 ? -2 : -14,
+  };
+  return Math.round(
+    (candidate.score ?? 0) * 0.35 +
+      (candidate.discoveryScore ?? 0) * 0.22 +
+      freshness +
+      quality[candidate.signalQuality ?? "STALLED"] +
+      verification[candidate.triggerVerificationState ?? "UNVERIFIED"] +
+      Math.min(20, Math.max(0, candidate.rvol - 1.25) * 12) +
+      Math.min(16, Math.max(0, (candidate.marketAttentionShift ?? 0) - 45) * 0.22) +
+      Math.min(22, Math.max(0, candidate.continuation - 55) * 0.75) +
+      Math.min(12, Math.max(0, (candidate.confirmationCount ?? 0) - 2) * 5) -
+      candidate.risk * 0.22 -
+      (candidate.decayScore ?? 0) * 0.42,
+  );
+}
+
+function isIgnoreSetup(candidate: TradingCandidate) {
+  return candidate.action === "Undvik" ||
+    candidate.signalQuality === "DEAD" ||
+    candidate.signalQuality === "EXHAUSTED" ||
+    (candidate.decayScore ?? 0) >= 70 ||
+    (!candidate.isActiveToday && candidate.freshnessStatus !== "premarketContext" && candidate.freshnessStatus !== "afterClose") ||
+    (candidate.continuation < 45 && candidate.rvol < 1.2) ||
+    (candidate.triggerVerificationState === "PRICE_ONLY" && candidate.narrativeTriggerType === "UNKNOWN" && candidate.rvol < 1.35);
+}
+
+function uniqCandidates(candidates: TradingCandidate[]) {
+  const seen = new Set<string>();
+  return candidates.filter((candidate) => {
+    const key = candidate.ticker.toUpperCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function transitionLabel(changeType: string) {
   const labels: Record<string, string> = {
     movedUp: "starkare",
@@ -395,16 +456,22 @@ function CandidateDetails({ candidate }: { candidate: TradingCandidate }) {
   );
 }
 
-function EdgeRow({ candidate, onOpen }: { candidate: TradingCandidate; onOpen: (candidate: TradingCandidate) => void }) {
+function EdgeRow({ candidate, onOpen, tier = "watch" }: { candidate: TradingCandidate; onOpen: (candidate: TradingCandidate) => void; tier?: "top" | "watch" | "ignore" }) {
   const dayMove = candidate.dayChangePct ?? candidate.movePct;
   const intradayMove = candidate.intradayMomentumPct ?? candidate.movePct;
+  const rowClass =
+    tier === "top"
+      ? "border-emerald-500/50 bg-emerald-950/15 hover:border-emerald-400 hover:bg-emerald-950/25"
+      : tier === "ignore"
+        ? "border-zinc-900 bg-zinc-950/40 opacity-70 hover:border-zinc-700 hover:bg-zinc-900/60"
+        : "border-zinc-800 bg-zinc-950/80 hover:border-cyan-800 hover:bg-zinc-900/80";
   return (
     <button
       type="button"
       onClick={() => onOpen(candidate)}
-      className="w-full cursor-pointer rounded border border-zinc-800 bg-zinc-950/80 p-3 text-left transition hover:border-cyan-800 hover:bg-zinc-900/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-500"
+      className={`w-full cursor-pointer rounded border p-3 text-left transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-500 ${rowClass}`}
     >
-      <div className="grid gap-3 md:grid-cols-[130px_1fr_90px_90px_110px] md:items-start">
+      <div className="grid gap-3 md:grid-cols-[130px_1fr_90px_90px_90px_110px] md:items-start">
         <div>
           <div className="text-base font-semibold text-zinc-50">{candidate.ticker}</div>
           <div className="text-xs text-zinc-500">{candidate.company}</div>
@@ -428,6 +495,10 @@ function EdgeRow({ candidate, onOpen }: { candidate: TradingCandidate; onOpen: (
         <div>
           <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">Risk</div>
           <div className="text-sm font-semibold text-zinc-100">{pct(candidate.risk)}</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">Conv</div>
+          <div className={tier === "top" ? "text-sm font-semibold text-emerald-100" : "text-sm font-semibold text-zinc-100"}>{setupConviction(candidate)}</div>
         </div>
         <div>
           <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">Day / Intraday / RVOL</div>
@@ -1071,6 +1142,40 @@ export function TerminalV2Shell() {
     [snapshot],
   );
   const breadthItems = snapshot?.breadth[breadthTab] ?? [];
+  const topSetups = snapshot?.topFocus.slice(0, 3) ?? [];
+  const topSetupTickers = new Set(topSetups.map((candidate) => candidate.ticker.toUpperCase()));
+  const watchlistSetups = snapshot
+    ? uniqCandidates([
+        ...snapshot.breadth.watch,
+        ...snapshot.breadth.stealth,
+        ...snapshot.candidates.filter((candidate) => !topSetupTickers.has(candidate.ticker.toUpperCase()) && !isIgnoreSetup(candidate)),
+      ])
+        .filter((candidate) => !topSetupTickers.has(candidate.ticker.toUpperCase()))
+        .slice(0, 8)
+    : [];
+  const ignoreSetups = snapshot
+    ? uniqCandidates([
+        ...snapshot.breadth.noChase,
+        ...snapshot.breadth.recentlyActive,
+        ...snapshot.candidates.filter(isIgnoreSetup),
+      ]).slice(0, 8)
+    : [];
+  const tieredTickers = new Set([...topSetups, ...watchlistSetups, ...ignoreSetups].map((candidate) => candidate.ticker.toUpperCase()));
+  const secondaryActiveItems = snapshot?.candidates
+    .filter((candidate) => candidate.isActiveToday && !tieredTickers.has(candidate.ticker.toUpperCase()))
+    .slice(0, 4) ?? [];
+  const activePriority = snapshot?.priorityBoard
+    .filter((item) => item.priorityState === "MUST_ACT" || item.priorityState === "WATCH_CLOSELY" || item.priorityState === "REENTRY_WATCH" || item.priorityState === "AVOID")
+    .slice(0, 5) ?? [];
+  const memoryItems = snapshot?.priorityBoard
+    .filter((item) => item.freshnessStatus !== "activeToday" && (item.priorityState === "DEAD" || item.priorityState === "AVOID" || item.priorityState === "REENTRY_WATCH"))
+    .slice(0, 4) ?? [];
+  const trackedFocusItems = snapshot?.trackedUniverse
+    .filter((item) => item.status === "recentlyActive")
+    .slice(0, 4) ?? [];
+  const positionFocusItems = snapshot?.positionManagement
+    .filter((item) => item.sourceStatus === "activeCandidate" || item.state === "TRIM" || item.state === "TIGHTEN_STOP" || item.state === "EXIT_RISK" || item.state === "HOLD")
+    .slice(0, 8) ?? [];
 
   function openCandidate(candidate: TradingCandidate) {
     setSelectedDetail({ type: "candidate", candidate });
@@ -1191,37 +1296,70 @@ export function TerminalV2Shell() {
           </div>
         </Section>
 
-        <Section title="Dagens fokus">
+        <Section title="Live Edge Board">
           {snapshot.warnings.length > 0 ? (
             <div className="mb-3 space-y-1 text-xs text-amber-200">
               {snapshot.warnings.map((warning) => <div key={warning}>{warning}</div>)}
             </div>
           ) : null}
-          <div className="grid gap-3 md:grid-cols-3">
-            {snapshot.topFocus.length > 0 ? snapshot.topFocus.slice(0, 3).map((candidate) => (
-              <button type="button" onClick={() => openDetailForItem(candidate)} key={`focus-${candidate.ticker}`} className="cursor-pointer rounded border border-zinc-800 bg-zinc-900/50 p-3 text-left transition hover:border-cyan-800 hover:bg-zinc-900/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-500">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-semibold">{candidate.ticker}</span>
-                  <span className={`rounded border px-2 py-0.5 text-[11px] ${badgeClass(candidate.action)}`}>{candidate.action}</span>
+          <div className="space-y-5">
+            <div>
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <h3 className="text-xs font-semibold uppercase tracking-[0.2em] text-emerald-300">Top Setups</h3>
+                <span className="text-xs text-zinc-600">max 3 · kräver continuation, RVOL, struktur och färskhet</span>
+              </div>
+              <div className="space-y-2">
+                {topSetups.length > 0 ? topSetups.map((candidate) => (
+                  <EdgeRow key={`top-setup-${candidate.ticker}`} candidate={candidate} onOpen={openDetailForItem} tier="top" />
+                )) : (
+                  <div className="rounded border border-zinc-800 bg-zinc-950/60 p-4 text-sm text-zinc-400">Inga rena Top Setups just nu. Det är en signal i sig: vänta på starkare participation eller färsk trigger.</div>
+                )}
+              </div>
+            </div>
+
+            <div>
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <h3 className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">Watchlist</h3>
+                <span className="text-xs text-zinc-600">intressant men ofullständigt</span>
+              </div>
+              {watchlistSetups.length > 0 ? (
+                <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+                  {watchlistSetups.map((candidate) => (
+                    <MiniCase key={`watchlist-setup-${candidate.ticker}`} candidate={candidate} onOpen={openDetailForItem} />
+                  ))}
                 </div>
-                <p className="mt-2 text-sm text-zinc-300">{candidate.thesis}</p>
-                <p className="mt-2 text-xs text-zinc-500">Trigger: {candidate.trigger}</p>
-              </button>
-            )) : (
-              <div className="rounded border border-zinc-800 bg-zinc-900/50 p-3 text-sm text-zinc-400">Inga verifierade fokuscase i senaste snapshot.</div>
-            )}
+              ) : (
+                <p className="text-sm text-zinc-500">Ingen separat watchlist efter Top Setup-filtrering.</p>
+              )}
+            </div>
+
+            <div>
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <h3 className="text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500">Ignore / Dead Money</h3>
+                <span className="text-xs text-zinc-700">stale, låg RVOL, hög fade-risk eller svag confirmation</span>
+              </div>
+              {ignoreSetups.length > 0 ? (
+                <div className="space-y-2">
+                  {ignoreSetups.slice(0, 4).map((candidate) => (
+                    <EdgeRow key={`ignore-setup-${candidate.ticker}`} candidate={candidate} onOpen={openDetailForItem} tier="ignore" />
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-zinc-500">Inga tydliga dead-money case i denna snapshot.</p>
+              )}
+            </div>
           </div>
         </Section>
 
         <Section title="Priority Board">
-          {snapshot.priorityBoard.length > 0 ? (
+          {activePriority.length > 0 ? (
             <div className="space-y-2">
-              {snapshot.priorityBoard.slice(0, 8).map((item) => (
+              {activePriority.map((item) => (
                 <button
                   key={`priority-${item.ticker}-${item.priorityState}`}
                   type="button"
                   onClick={() => openDetailForItem(item)}
-                  className="grid w-full cursor-pointer gap-2 rounded border border-zinc-800 bg-zinc-950/70 p-3 text-left text-sm transition hover:border-cyan-800 hover:bg-zinc-900/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-500 md:grid-cols-[120px_130px_1fr_90px] md:items-center"
+                  className="grid w-full cursor-pointer gap-2 rounded border border-zinc-900 bg-zinc-950/50 p-3 text-left text-sm transition hover:border-cyan-900 hover:bg-zinc-900/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-500 md:grid-cols-[120px_130px_1fr_90px] md:items-center"
                 >
                   <div>
                     <div className="font-semibold text-zinc-100">{item.ticker}</div>
@@ -1231,12 +1369,12 @@ export function TerminalV2Shell() {
                     {priorityLabel(item.priorityState)}
                   </span>
                   <div>
-                    <div className="text-zinc-200">{item.action}</div>
-                    <div className="line-clamp-1 text-xs text-zinc-500">
+                    <div className="text-zinc-300">{item.action}</div>
+                    <div className="line-clamp-1 text-xs text-zinc-600">
                       <span className={`mr-1 rounded border px-1.5 py-0.5 text-[9px] ${verificationClass(item.triggerVerificationState)}`}>
                         {verificationLabel(item.triggerVerificationState)}
                       </span>
-                      {signalFreshnessLabel(item.signalQuality)} · {narrativeLabel(item.narrativeTriggerType)} · discovery {item.discoveryScore ?? "-"} · {item.freshnessMinutes}m sedan bekräftelse
+                      {signalFreshnessLabel(item.signalQuality)} · {narrativeLabel(item.narrativeTriggerType)} · discovery {item.discoveryScore ?? "-"} · {item.freshnessMinutes}m
                     </div>
                   </div>
                   <div className="text-xs text-zinc-500">
@@ -1247,7 +1385,7 @@ export function TerminalV2Shell() {
               ))}
             </div>
           ) : (
-            <p className="text-sm text-zinc-400">Priority Board saknar signaler i senaste snapshot.</p>
+            <p className="text-sm text-zinc-500">Priority Board har inget som ska konkurrera med Live Edge Board just nu.</p>
           )}
         </Section>
 
@@ -1354,50 +1492,40 @@ export function TerminalV2Shell() {
 
         <div className="grid gap-4 lg:grid-cols-2">
           <Section title="Active Today">
-            {snapshot.candidates.filter((candidate) => candidate.isActiveToday).slice(0, 6).length > 0 ? (
+            {secondaryActiveItems.length > 0 ? (
               <div className="space-y-2">
-                {snapshot.candidates.filter((candidate) => candidate.isActiveToday).slice(0, 6).map((candidate) => (
+                {secondaryActiveItems.map((candidate) => (
                   <MiniCase key={`active-today-${candidate.ticker}`} candidate={candidate} onOpen={openDetailForItem} />
                 ))}
               </div>
             ) : (
-              <p className="text-sm text-zinc-400">Inga färska same-day aktiva case just nu.</p>
+              <p className="text-sm text-zinc-500">Inga extra aktiva case utanför Top Setups.</p>
             )}
           </Section>
 
           <Section title="Recently Active / Market Memory">
-            {snapshot.priorityBoard.filter((item) => item.freshnessStatus !== "activeToday").slice(0, 6).length > 0 ? (
+            {memoryItems.length > 0 ? (
               <div className="space-y-2">
-                {snapshot.priorityBoard.filter((item) => item.freshnessStatus !== "activeToday").slice(0, 6).map((item) => (
+                {memoryItems.map((item) => (
                   <button
                     key={`memory-${item.ticker}-${item.priorityState}`}
                     type="button"
                     onClick={() => openDetailForItem(item)}
-                    className="w-full cursor-pointer rounded border border-zinc-800 bg-zinc-950/60 p-3 text-left text-sm transition hover:border-cyan-800 hover:bg-zinc-900/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-500"
+                    className="w-full cursor-pointer rounded border border-zinc-900 bg-zinc-950/40 p-3 text-left text-sm text-zinc-500 transition hover:border-zinc-700 hover:bg-zinc-900/60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-500"
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <span className="font-semibold text-zinc-100">{item.ticker}</span>
+                      <span className="font-semibold text-zinc-300">{item.ticker}</span>
                       <span className="text-xs text-zinc-500">{freshnessLabel(item.freshnessStatus)}</span>
                     </div>
-                    <p className="mt-1 line-clamp-2 text-xs text-zinc-400">{item.whyNow}</p>
+                    <p className="mt-1 line-clamp-2 text-xs text-zinc-600">{item.whyNow}</p>
                   </button>
                 ))}
               </div>
             ) : (
-              <p className="text-sm text-zinc-400">Ingen separat market memory att visa.</p>
+              <p className="text-sm text-zinc-500">Ingen stale memory värd att visa separat.</p>
             )}
           </Section>
         </div>
-
-        <Section title="Live Edge Board">
-          <div className="space-y-2">
-            {snapshot.candidates.length > 0 ? snapshot.candidates.slice(0, 10).map((candidate) => (
-              <EdgeRow key={`edge-${candidate.ticker}-${candidate.sourceBucket}`} candidate={candidate} onOpen={openDetailForItem} />
-            )) : (
-              <div className="rounded border border-zinc-800 p-4 text-sm text-zinc-400">Inga kandidater i canonical snapshot.</div>
-            )}
-          </div>
-        </Section>
 
         <Section title="Market breadth">
           <div className="mb-3 flex flex-wrap gap-2">
@@ -1430,14 +1558,14 @@ export function TerminalV2Shell() {
         </Section>
 
         <Section title="Tracked / Market Memory">
-          {snapshot.trackedUniverse.length > 0 ? (
-            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-5">
-              {snapshot.trackedUniverse.slice(0, 15).map((item) => (
+          {trackedFocusItems.length > 0 ? (
+            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+              {trackedFocusItems.map((item) => (
                 <button
                   key={`tracked-${item.ticker}`}
                   type="button"
                   onClick={() => openDetailForItem(item)}
-                  className="cursor-pointer rounded border border-zinc-800 bg-zinc-950/60 p-3 text-left text-sm transition hover:border-cyan-800 hover:bg-zinc-900/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-500"
+                  className="cursor-pointer rounded border border-zinc-900 bg-zinc-950/45 p-3 text-left text-sm transition hover:border-cyan-900 hover:bg-zinc-900/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-500"
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div>
@@ -1456,14 +1584,14 @@ export function TerminalV2Shell() {
               ))}
             </div>
           ) : (
-            <p className="text-sm text-zinc-400">Inga tracked tickers i snapshoten.</p>
+            <p className="text-sm text-zinc-500">Tracked memory är komprimerad: inga active/recent rows att lyfta.</p>
           )}
         </Section>
 
         <Section title="Position Management">
-          {snapshot.positionManagement.length > 0 ? (
+          {positionFocusItems.length > 0 ? (
             <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
-              {snapshot.positionManagement.slice(0, 12).map((item) => (
+              {positionFocusItems.map((item) => (
                 <button
                   key={`position-${item.ticker}`}
                   type="button"
@@ -1488,7 +1616,7 @@ export function TerminalV2Shell() {
               ))}
             </div>
           ) : (
-            <p className="text-sm text-zinc-400">Inga position-management beslut i snapshoten.</p>
+            <p className="text-sm text-zinc-500">Inga position-management beslut med aktiv risk eller färsk setup.</p>
           )}
         </Section>
 

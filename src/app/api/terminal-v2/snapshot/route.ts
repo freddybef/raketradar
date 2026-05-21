@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { buildCanonicalTradingSnapshot } from "@/lib/terminal-v2/canonicalTradingSnapshot";
+import { buildCanonicalTradingSnapshot } from "@/lib/terminalV2/canonicalTradingSnapshot";
 
 export const dynamic = "force-dynamic";
 

@@ -124,6 +124,7 @@ const VERIFIED_SWEDISH_UNIVERSE: SwedishEquityUniverseEntry[] = [
   { ticker: "REJL B", companyName: "Rejlers AB", exchange: "First North", sector: "consulting", marketCapBucket: "small", liquidityBucket: "normal", verified: true },
   { ticker: "SAVR", companyName: "SAVR AB", exchange: "First North", sector: "fintech", marketCapBucket: "small", liquidityBucket: "normal", verified: true },
   { ticker: "SEDANA", companyName: "Sedana Medical AB", exchange: "First North", sector: "medtech", marketCapBucket: "small", liquidityBucket: "normal", verified: true },
+  { ticker: "SUS", companyName: "Surgical Science Sweden AB", exchange: "First North", sector: "medtech", marketCapBucket: "small", liquidityBucket: "normal", verified: true },
   { ticker: "TRUE B", companyName: "Truecaller AB", exchange: "First North", sector: "software", marketCapBucket: "mid", liquidityBucket: "liquid", verified: true },
   { ticker: "VPLAY B", companyName: "Viaplay Group AB", exchange: "First North", sector: "media", marketCapBucket: "small", liquidityBucket: "normal", verified: true },
   { ticker: "ZICC", companyName: "Ziccum AB", exchange: "First North", sector: "biotech", marketCapBucket: "micro", liquidityBucket: "thin", verified: true },

@@ -12,11 +12,16 @@ type AgentSnapshotSource = {
   }>;
 };
 
+function tickerKey(ticker: string) {
+  return ticker.trim().toUpperCase();
+}
+
 export function snapshotsFromAgent(agent: AgentSnapshotSource): RunnerCaseSnapshot[] {
   return agent.cases
     .filter((item) => item.state !== "REJECTED")
+    .filter((item) => tickerKey(item.ticker).length > 0)
     .map((item) => ({
-      ticker: item.ticker,
+      ticker: tickerKey(item.ticker),
       state: item.state,
       score: Number(item.raw?.preOpenScore ?? 0),
       confidence: item.confidence,
@@ -33,15 +38,16 @@ function severity(delta: number): "LOW" | "MEDIUM" | "HIGH" {
 }
 
 export function detectRankingChanges(previous: RunnerCaseSnapshot[], current: RunnerCaseSnapshot[]): RankingChange[] {
-  const previousMap = new Map(previous.map((item) => [item.ticker, item]));
-  const currentMap = new Map(current.map((item) => [item.ticker, item]));
+  const previousMap = new Map(previous.map((item) => [tickerKey(item.ticker), item]));
+  const currentMap = new Map(current.map((item) => [tickerKey(item.ticker), item]));
   const changes: RankingChange[] = [];
 
   for (const item of current) {
-    const before = previousMap.get(item.ticker);
+    const ticker = tickerKey(item.ticker);
+    const before = previousMap.get(ticker);
     if (!before) {
       changes.push({
-        ticker: item.ticker,
+        ticker,
         changeType: "newEntrant",
         previousValue: null,
         currentValue: item.state,
@@ -52,7 +58,7 @@ export function detectRankingChanges(previous: RunnerCaseSnapshot[], current: Ru
     }
     if (before.state !== item.state) {
       changes.push({
-        ticker: item.ticker,
+        ticker,
         changeType: "stateChanged",
         previousValue: before.state,
         currentValue: item.state,
@@ -63,7 +69,7 @@ export function detectRankingChanges(previous: RunnerCaseSnapshot[], current: Ru
     const confidenceDelta = item.confidence - before.confidence;
     if (Math.abs(confidenceDelta) >= 8) {
       changes.push({
-        ticker: item.ticker,
+        ticker,
         changeType: "confidenceChanged",
         previousValue: before.confidence,
         currentValue: item.confidence,
@@ -74,7 +80,7 @@ export function detectRankingChanges(previous: RunnerCaseSnapshot[], current: Ru
     const riskDelta = item.risk - before.risk;
     if (Math.abs(riskDelta) >= 15) {
       changes.push({
-        ticker: item.ticker,
+        ticker,
         changeType: "riskChanged",
         previousValue: before.risk,
         currentValue: item.risk,
@@ -85,7 +91,7 @@ export function detectRankingChanges(previous: RunnerCaseSnapshot[], current: Ru
     const scoreDelta = item.score - before.score;
     if (Math.abs(scoreDelta) >= 12) {
       changes.push({
-        ticker: item.ticker,
+        ticker,
         changeType: scoreDelta > 0 ? "movedUp" : "movedDown",
         previousValue: before.score,
         currentValue: item.score,
@@ -96,9 +102,10 @@ export function detectRankingChanges(previous: RunnerCaseSnapshot[], current: Ru
   }
 
   for (const item of previous) {
-    if (!currentMap.has(item.ticker)) {
+    const ticker = tickerKey(item.ticker);
+    if (!currentMap.has(ticker)) {
       changes.push({
-        ticker: item.ticker,
+        ticker,
         changeType: "dropped",
         previousValue: item.state,
         currentValue: null,

@@ -298,11 +298,15 @@ export interface CanonicalTradingSnapshot {
 const SNAPSHOT_SCAN_TIMEOUT_MS = 18_000;
 const DEFAULT_TRACKED_TICKERS = ["KVIX", "SHT", "NEXAM", "YUBICO", "EPIS B", "GOMX", "MILDEF", "SIVE", "AAC", "CLAV"];
 const LIVE_COVERAGE_AUDIT_TICKERS = ["SHT", "SIVE", "AAC", "KVIX", "YUBICO", "MILDEF"];
-const UNIVERSE_BY_TICKER = new Map(getSwedishEquityUniverse().map((entry) => [entry.ticker, entry]));
+const UNIVERSE_BY_TICKER = new Map(getSwedishEquityUniverse().map((entry) => [entry.ticker.trim().toUpperCase(), entry]));
 
 function round(value: number, decimals = 0) {
   const factor = 10 ** decimals;
   return Math.round(value * factor) / factor;
+}
+
+function tickerKey(ticker: string) {
+  return ticker.trim().toUpperCase();
 }
 
 function stockholmParts(date: Date) {
@@ -552,7 +556,10 @@ function classifyCatalyst(candidate: AutonomousDiscoveryCandidate): { type: Cata
   if (/order|kontrakt|contract|avtal|ramavtal/.test(text)) {
     return { type: "contract_award", score: 76, summary: "Order/avtal-liknande catalyst; nästa steg kräver volymbekräftelse." };
   }
-  if (/biotech|medtech|pharma|fda|ce|studie|clinical|medicin/.test(entityText)) {
+  const sectorHasBiotechIdentity = /biotech|pharma|medtech/.test(candidate.sector.toLowerCase());
+  const entityHasStrongBiotechIdentity = /biotech|pharma|medtech|therapeutics|medical|diagnostics|life science|lifescience/.test(entityText);
+  const flowHasClinicalOrRegulatoryTrigger = /fda|clinical|study|trial|phase|ce mark|ce-märk|approval|drug|therapy/.test(flowText);
+  if ((sectorHasBiotechIdentity || entityHasStrongBiotechIdentity) && flowHasClinicalOrRegulatoryTrigger) {
     const score = reaction.fadeProbability >= 60 ? 62 : 74;
     return { type: "biotech_binary", score, summary: "Binärt biotech/medtech-flöde: hög optionalitet men också hög fade-risk." };
   }
@@ -623,6 +630,8 @@ function classifyNarrativeTrigger(
   const entityText = entityNarrativeText(candidate);
   const reaction = candidate.reaction;
   const isSmallMid = /small|micro|nano|first north|spotlight|ngm|nordic sme/i.test(`${candidate.marketCapBucket} ${candidate.exchange}`);
+  const hasRealRegulatorySignal = /fda|510\(k\)|ce-märkning|ce mark|mdr|approval|godkänn|clinical|klinisk|studie|fas\s/.test(flowText);
+  const isLifeScienceEntity = /biotech|medtech|pharma|medical|therapeutic|diagnostic|surgery|surgical/.test(entityText);
   const dormantWakeup =
     reaction.intradayMomentum >= 2.5 &&
     reaction.relativeVolume >= 1.5 &&
@@ -641,13 +650,13 @@ function classifyNarrativeTrigger(
               ? "DATACENTER_INFRA"
               : /order|kontrakt|avtal|ramavtal|contract|customer|kund/.test(flowText)
                 ? "NEW_CONTRACT"
-                : /fda|ce|myndighet|approval|godkänn|regulator|clinical|studie|fas /.test(flowText)
+                : hasRealRegulatorySignal && isLifeScienceEntity
                   ? "REGULATORY_TRIGGER"
                   : /lönsamhet|profitability|break-even|marginal|cash flow|kassaflöde/.test(flowText)
                     ? "PROFITABILITY_INFLECTION"
                     : /finansiering|funding|emission|riktad emission|lånefacilitet|survival|överlevnad/.test(flowText)
                       ? "FUNDING_SURVIVAL"
-                      : /ai|battery|batteri|uranium|uran|medtech|biotech|turnaround|restructuring|supply chain|logistik/.test(entityText)
+                      : /ai|battery|batteri|uranium|uran|turnaround|restructuring|supply chain|logistik/.test(entityText)
                         ? "SECOND_DERIVATIVE_THEME"
                         : "UNKNOWN";
   const hasFreshFundamentalCatalyst =
@@ -1121,7 +1130,91 @@ function sortCandidates(a: TradingCandidate, b: TradingCandidate) {
     "Hog risk": 3,
     Undvik: 4,
   };
-  return order[a.action] - order[b.action] || b.score - a.score || b.continuation - a.continuation;
+  return convictionScore(b) - convictionScore(a) || order[a.action] - order[b.action] || b.score - a.score || b.continuation - a.continuation;
+}
+
+function convictionScore(candidate: TradingCandidate) {
+  const freshnessBoost =
+    candidate.isActiveToday
+      ? 18
+      : candidate.freshnessStatus === "premarketContext" || candidate.freshnessStatus === "afterClose"
+        ? 3
+        : candidate.freshnessStatus === "recentMemory"
+          ? -28
+          : -44;
+  const qualityBoost: Record<SignalQuality, number> = {
+    FRESH_IGNITION: 24,
+    ACTIVE_CONTINUATION: 22,
+    RECLAIM_SETUP: 10,
+    EARLY_WATCH: 4,
+    STALLED: -18,
+    EXHAUSTED: -30,
+    DEAD: -42,
+  };
+  const verificationBoost: Record<TriggerVerificationState, number> = {
+    VERIFIED: 16,
+    THEMATIC: 7,
+    UNVERIFIED: -4,
+    PRICE_ONLY: candidate.rvol >= 2.8 && candidate.continuation >= 75 ? -2 : -14,
+  };
+  const participation =
+    Math.min(20, Math.max(0, candidate.rvol - 1.25) * 12) +
+    Math.min(16, Math.max(0, candidate.marketAttentionShift - 45) * 0.22);
+  const structure =
+    Math.min(22, Math.max(0, candidate.continuation - 55) * 0.75) +
+    Math.min(12, Math.max(0, candidate.confirmationCount - 2) * 5);
+  return Math.round(
+    candidate.score * 0.35 +
+      candidate.discoveryScore * 0.22 +
+      freshnessBoost +
+      qualityBoost[candidate.signalQuality] +
+      verificationBoost[candidate.triggerVerificationState] +
+      participation +
+      structure -
+      candidate.risk * 0.22 -
+      candidate.decayScore * 0.42,
+  );
+}
+
+function isTopSetup(candidate: TradingCandidate) {
+  const strongSignal = candidate.signalQuality === "FRESH_IGNITION" || candidate.signalQuality === "ACTIVE_CONTINUATION";
+  const realTrigger =
+    candidate.triggerVerificationState === "VERIFIED" ||
+    candidate.triggerVerificationState === "THEMATIC" ||
+    (candidate.triggerVerificationState === "PRICE_ONLY" && candidate.rvol >= 2.8 && candidate.continuation >= 78);
+  return candidate.isActiveToday &&
+    candidate.action === "Agera" &&
+    strongSignal &&
+    candidate.continuation >= 70 &&
+    candidate.rvol >= 1.55 &&
+    candidate.risk <= 65 &&
+    candidate.decayScore <= 32 &&
+    candidate.confirmationCount >= 3 &&
+    candidate.marketAttentionShift >= 48 &&
+    realTrigger &&
+    convictionScore(candidate) >= 72;
+}
+
+function isWatchlistSetup(candidate: TradingCandidate) {
+  if (isTopSetup(candidate)) return false;
+  if (candidate.action === "Undvik" || candidate.action === "Hog risk") return false;
+  if (candidate.signalQuality === "DEAD" || candidate.signalQuality === "EXHAUSTED") return false;
+  if (candidate.decayScore >= 65) return false;
+  if (!candidate.isActiveToday && candidate.freshnessStatus !== "premarketContext" && candidate.freshnessStatus !== "afterClose") return false;
+  return candidate.sourceBucket === "STEALTH" ||
+    candidate.signalQuality === "RECLAIM_SETUP" ||
+    candidate.signalQuality === "EARLY_WATCH" ||
+    (candidate.continuation >= 58 && candidate.rvol >= 1.25 && candidate.risk < 78);
+}
+
+function isDeadMoney(candidate: TradingCandidate) {
+  return candidate.action === "Undvik" ||
+    candidate.signalQuality === "DEAD" ||
+    candidate.signalQuality === "EXHAUSTED" ||
+    candidate.decayScore >= 70 ||
+    (!candidate.isActiveToday && candidate.freshnessStatus !== "premarketContext" && candidate.freshnessStatus !== "afterClose") ||
+    (candidate.continuation < 45 && candidate.rvol < 1.2) ||
+    (candidate.triggerVerificationState === "PRICE_ONLY" && candidate.narrativeTriggerType === "UNKNOWN" && candidate.rvol < 1.35);
 }
 
 function buildWarnings(result: AutonomousDiscoveryResult) {
@@ -1149,20 +1242,21 @@ function buildFreshnessWarnings(snapshot: ReturnType<typeof buildSnapshotFreshne
 function uniqByTicker(candidates: TradingCandidate[]) {
   const seen = new Set<string>();
   return candidates.filter((candidate) => {
-    if (seen.has(candidate.ticker)) return false;
-    seen.add(candidate.ticker);
+    const key = tickerKey(candidate.ticker);
+    if (seen.has(key)) return false;
+    seen.add(key);
     return true;
   });
 }
 
 function buildRecentlyActive(candidates: TradingCandidate[], snapshots: RunnerCaseSnapshot[], changes: Array<RankingChange & { createdAt?: string }>) {
-  const current = new Set(candidates.map((candidate) => candidate.ticker));
+  const current = new Set(candidates.map((candidate) => tickerKey(candidate.ticker)));
   return uniqByTicker(
     snapshots
-      .filter((snapshot) => snapshot.source === "discovery" && !current.has(snapshot.ticker) && snapshot.ticker.toUpperCase() !== "BIOX")
+      .filter((snapshot) => snapshot.source === "discovery" && !current.has(tickerKey(snapshot.ticker)) && tickerKey(snapshot.ticker) !== "BIOX")
       .filter((snapshot) => snapshot.score >= 55 || snapshot.state === "HIGH_CONVICTION" || snapshot.state === "EARLY_CONTINUATION")
       .map((snapshot) => {
-        const reason = changes.find((change) => change.ticker === snapshot.ticker)?.reason;
+        const reason = changes.find((change) => tickerKey(change.ticker) === tickerKey(snapshot.ticker))?.reason;
         return toPersistedCandidate(snapshot, reason ?? "Nyligen aktivt, men inte i senaste topplista.");
       })
       .filter((candidate): candidate is TradingCandidate => Boolean(candidate)),
@@ -1182,13 +1276,14 @@ function buildTrackedUniverse(input: {
   discovery?: AutonomousDiscoveryResult | null;
 }): TrackedTicker[] {
   const tracked = new Map<string, TrackedTicker>();
-  const missingByTicker = new Map((input.discovery?.missingTickers ?? []).map((item) => [item.ticker.toUpperCase(), item]));
-  const aliasByTicker = new Map((input.discovery?.aliasDebug ?? []).map((item) => [item.ticker.toUpperCase(), item]));
-  const reactionByTicker = new Map((input.discovery?.liveReactions ?? []).map((reaction) => [reaction.ticker.toUpperCase(), reaction]));
+  const missingByTicker = new Map((input.discovery?.missingTickers ?? []).map((item) => [tickerKey(item.ticker), item]));
+  const aliasByTicker = new Map((input.discovery?.aliasDebug ?? []).map((item) => [tickerKey(item.ticker), item]));
+  const reactionByTicker = new Map((input.discovery?.liveReactions ?? []).map((reaction) => [tickerKey(reaction.ticker), reaction]));
   function liveMeta(ticker: string, candidate?: TradingCandidate) {
-    const missing = missingByTicker.get(ticker.toUpperCase());
-    const alias = aliasByTicker.get(ticker.toUpperCase());
-    const reaction = reactionByTicker.get(ticker.toUpperCase());
+    const key = tickerKey(ticker);
+    const missing = missingByTicker.get(key);
+    const alias = aliasByTicker.get(key);
+    const reaction = reactionByTicker.get(key);
     if (reaction) {
       return {
         liveDataStatus: "fresh" as const,
@@ -1262,7 +1357,7 @@ function buildTrackedUniverse(input: {
   }
   for (const candidate of input.candidates) {
     const live = liveMeta(candidate.ticker, candidate);
-    tracked.set(candidate.ticker, {
+    tracked.set(tickerKey(candidate.ticker), {
       ticker: candidate.ticker,
       company: candidate.company,
       status: "activeCandidate",
@@ -1276,9 +1371,10 @@ function buildTrackedUniverse(input: {
     });
   }
   for (const candidate of input.recentlyActive) {
-    if (tracked.has(candidate.ticker)) continue;
+    const key = tickerKey(candidate.ticker);
+    if (tracked.has(key)) continue;
     const live = liveMeta(candidate.ticker, candidate);
-    tracked.set(candidate.ticker, {
+    tracked.set(key, {
       ticker: candidate.ticker,
       company: candidate.company,
       status: "recentlyActive",
@@ -1292,12 +1388,13 @@ function buildTrackedUniverse(input: {
     });
   }
   for (const snapshot of input.snapshots) {
-    if (snapshot.ticker.toUpperCase() === "BIOX" || tracked.has(snapshot.ticker) || snapshot.source !== "discovery") continue;
-    const identity = UNIVERSE_BY_TICKER.get(snapshot.ticker);
+    const key = tickerKey(snapshot.ticker);
+    if (key === "BIOX" || tracked.has(key) || snapshot.source !== "discovery") continue;
+    const identity = UNIVERSE_BY_TICKER.get(key);
     const live = liveMeta(snapshot.ticker);
-    tracked.set(snapshot.ticker, {
-      ticker: snapshot.ticker,
-      company: identity?.companyName ?? snapshot.ticker,
+    tracked.set(key, {
+      ticker: key,
+      company: identity?.companyName ?? key,
       status: "trackedButNotActive",
       source: "persisted_case_state",
       summary: `${snapshot.ticker} finns i market memory men är inte aktiv toppkandidat i senaste scan.`,
@@ -1308,15 +1405,16 @@ function buildTrackedUniverse(input: {
     });
   }
   for (const ticker of DEFAULT_TRACKED_TICKERS) {
-    if (tracked.has(ticker)) continue;
-    const identity = UNIVERSE_BY_TICKER.get(ticker);
+    const key = tickerKey(ticker);
+    if (tracked.has(key)) continue;
+    const identity = UNIVERSE_BY_TICKER.get(key);
     const live = liveMeta(ticker);
-    tracked.set(ticker, {
-      ticker,
-      company: identity?.companyName ?? ticker,
+    tracked.set(key, {
+      ticker: key,
+      company: identity?.companyName ?? key,
       status: "trackedButNotActive",
       source: "manual_watch",
-      summary: `${ticker} är manuellt tracked som ${identity?.companyName ?? "Nordic market memory"}, men saknar färsk livebekräftelse i senaste snapshot.`,
+      summary: `${key} är manuellt tracked som ${identity?.companyName ?? "Nordic market memory"}, men saknar färsk livebekräftelse i senaste snapshot.`,
       lastKnownState: null,
       lastKnownScore: null,
       lastKnownConfidence: null,
@@ -1335,9 +1433,9 @@ function buildTrackedUniverse(input: {
 }
 
 function buildLiveCoverageAudit(trackedUniverse: TrackedTicker[]): LiveCoverageAuditItem[] {
-  const trackedByTicker = new Map(trackedUniverse.map((item) => [item.ticker.toUpperCase(), item]));
+  const trackedByTicker = new Map(trackedUniverse.map((item) => [tickerKey(item.ticker), item]));
   return LIVE_COVERAGE_AUDIT_TICKERS.map((ticker) => {
-    const item = trackedByTicker.get(ticker);
+    const item = trackedByTicker.get(tickerKey(ticker));
     const attempts = item?.providerAttempts ?? [];
     const successfulAttempt = attempts.find((attempt) => attempt.hasQuote && attempt.hasVolume && attempt.bars > 0);
     const partialAttempt = attempts.find((attempt) => attempt.hasQuote || attempt.hasVolume || attempt.bars > 0);
@@ -1352,7 +1450,7 @@ function buildLiveCoverageAudit(trackedUniverse: TrackedTicker[]): LiveCoverageA
             : "failed";
     return {
       ticker,
-      company: item?.company ?? UNIVERSE_BY_TICKER.get(ticker)?.companyName,
+      company: item?.company ?? UNIVERSE_BY_TICKER.get(tickerKey(ticker))?.companyName,
       liveDataStatus: item?.liveDataStatus ?? "not_tracked",
       providerSymbol: item?.workingAlias ?? successfulAttempt?.symbol ?? partialAttempt?.symbol ?? null,
       fetchStatus,
@@ -1428,23 +1526,27 @@ function positionRiskFor(item: TrackedTicker, state: PositionManagementState) {
   return 45;
 }
 
+function hasTrackedContinuity(item: TrackedTicker) {
+  return item.status === "activeCandidate" ||
+    item.status === "recentlyActive" ||
+    Boolean(item.candidate) ||
+    (item.lastKnownScore !== null && item.lastKnownScore !== undefined) ||
+    (item.lastKnownState !== null && item.lastKnownState !== undefined);
+}
+
 function buildPositionManagement(input: {
   trackedUniverse: TrackedTicker[];
   previousSnapshots: RunnerCaseSnapshot[];
   changes: Array<RankingChange & { createdAt?: string }>;
 }): PositionManagementDecision[] {
-  const previousByTicker = new Map(input.previousSnapshots.map((snapshot) => [snapshot.ticker, snapshot]));
-  const interesting = input.trackedUniverse.filter((item) =>
-    DEFAULT_TRACKED_TICKERS.includes(item.ticker) ||
-    item.status === "activeCandidate" ||
-    item.status === "recentlyActive"
-  );
+  const previousByTicker = new Map(input.previousSnapshots.map((snapshot) => [tickerKey(snapshot.ticker), snapshot]));
+  const interesting = input.trackedUniverse.filter(hasTrackedContinuity);
   return interesting.slice(0, 18).map((item) => {
     const candidate = item.candidate;
-    const previous = previousByTicker.get(item.ticker);
+    const previous = previousByTicker.get(tickerKey(item.ticker));
     const state = positionStateFor(item);
     const trend = confidenceTrend(candidate?.confidence ?? item.lastKnownConfidence, previous?.confidence);
-    const change = input.changes.find((entry) => entry.ticker === item.ticker)?.reason;
+    const change = input.changes.find((entry) => tickerKey(entry.ticker) === tickerKey(item.ticker))?.reason;
     const decisionText: Record<PositionManagementState, string> = {
       HOLD: "Håll/bevaka så länge triggern lever.",
       TRIM: "Ta ned risk eller undvik ny add efter stark rörelse.",
@@ -1465,7 +1567,9 @@ function buildPositionManagement(input: {
     const whatChanged = change
       ?? (previous
         ? `Senast känt state ${previous.state}, score ${previous.score}, confidence ${previous.confidence}.`
-        : "Ingen tidigare state i snapshot memory.");
+        : item.lastKnownState || (item.lastKnownScore !== null && item.lastKnownScore !== undefined)
+          ? `Senast känt state ${item.lastKnownState ?? "okänd"}, score ${item.lastKnownScore ?? "-"}, confidence ${item.lastKnownConfidence ?? "-"}.`
+          : "Ingen tidigare state i snapshot memory.");
     return {
       ticker: item.ticker,
       company: item.company,
@@ -1633,17 +1737,19 @@ function buildPriorityBoard(input: {
   positionManagement: PositionManagementDecision[];
   changes: Array<RankingChange & { createdAt?: string }>;
 }): PriorityItem[] {
-  const positionByTicker = new Map(input.positionManagement.map((item) => [item.ticker, item]));
-  const changeByTicker = new Map(input.changes.map((item) => [item.ticker, item]));
+  const positionByTicker = new Map(input.positionManagement.map((item) => [tickerKey(item.ticker), item]));
+  const changeByTicker = new Map(input.changes.map((item) => [tickerKey(item.ticker), item]));
   const important = input.trackedUniverse.filter((item) => {
-    const position = positionByTicker.get(item.ticker);
-    return item.status !== "trackedButNotActive" || Boolean(position) || DEFAULT_TRACKED_TICKERS.includes(item.ticker);
+    const position = positionByTicker.get(tickerKey(item.ticker));
+    return item.status !== "trackedButNotActive" ||
+      hasTrackedContinuity(item) ||
+      Boolean(position && position.source !== "tracked_memory");
   });
   return important
     .map((item) => {
       const candidate = item.candidate;
-      const position = positionByTicker.get(item.ticker);
-      const change = changeByTicker.get(item.ticker);
+      const position = positionByTicker.get(tickerKey(item.ticker));
+      const change = changeByTicker.get(tickerKey(item.ticker));
       const priorityState = priorityStateFor({ candidate, position, tracked: item });
       const confidence = Math.round(candidate?.confidence ?? position?.confidence ?? item.lastKnownConfidence ?? 0);
       const narrativeBoost = candidate?.hasFreshFundamentalCatalyst
@@ -1675,8 +1781,21 @@ function buildPriorityBoard(input: {
         expiresSoon: priorityState === "MUST_ACT" || priorityState === "WATCH_CLOSELY" || priorityState === "AVOID",
       } satisfies PriorityItem;
     })
+    .filter((item) => {
+      if (item.priorityState === "LOW_PRIORITY") return false;
+      if (item.priorityState === "MUST_ACT" || item.priorityState === "WATCH_CLOSELY") return item.urgencyScore >= 60;
+      if (item.priorityState === "REENTRY_WATCH") {
+        return item.freshnessStatus === "activeToday" ||
+          item.freshnessStatus === "premarketContext" ||
+          item.triggerVerificationState === "VERIFIED" ||
+          item.urgencyScore >= 58;
+      }
+      if (item.priorityState === "AVOID") return item.sourceStatus === "activeCandidate" || item.urgencyScore >= 58;
+      if (item.priorityState === "DEAD") return item.sourceStatus === "activeCandidate" && item.urgencyScore >= 35;
+      return false;
+    })
     .sort((a, b) => b.urgencyScore - a.urgencyScore || b.confidence - a.confidence || a.ticker.localeCompare(b.ticker))
-    .slice(0, 18);
+    .slice(0, 10);
 }
 
 function buildEarlyRadar(input: {
@@ -1686,11 +1805,11 @@ function buildEarlyRadar(input: {
   snapshotFreshness: ReturnType<typeof buildSnapshotFreshness>;
   newsIsLive: boolean;
 }): EarlyRadarItem[] {
-  const candidateByTicker = new Map(input.candidates.map((item) => [item.ticker.toUpperCase(), item]));
+  const candidateByTicker = new Map(input.candidates.map((item) => [tickerKey(item.ticker), item]));
   const items = new Map<string, EarlyRadarItem>();
   for (const trigger of input.newsTriggers) {
     if (!trigger.ticker || trigger.narrativeTriggerType === "UNKNOWN" || trigger.triggerType === "MACRO_NOISE") continue;
-    const ticker = trigger.ticker.toUpperCase();
+    const ticker = tickerKey(trigger.ticker);
     const candidate = candidateByTicker.get(ticker);
     const isFreshTrigger = trigger.isFreshToday;
     const priorityScore = Math.max(0, Math.min(100, Math.round(
@@ -1730,7 +1849,8 @@ function buildEarlyRadar(input: {
   for (const candidate of input.candidates) {
     if (!candidate.isActiveToday && candidate.freshnessStatus !== "premarketContext") continue;
     if (candidate.narrativeTriggerType === "UNKNOWN" || candidate.narrativeStrength < 58) continue;
-    const existing = items.get(candidate.ticker);
+    const key = tickerKey(candidate.ticker);
+    const existing = items.get(key);
     const priorityScore = Math.max(existing?.priorityScore ?? 0, Math.round(
       candidate.narrativeStrength * 0.36 +
         candidate.repricingProbability * 0.28 +
@@ -1738,7 +1858,7 @@ function buildEarlyRadar(input: {
         candidate.marketAttentionShift * 0.12 -
         candidate.decayScore * 0.2,
     ));
-    items.set(candidate.ticker, {
+    items.set(key, {
       ticker: candidate.ticker,
       company: candidate.company,
       rank: 0,
@@ -1758,11 +1878,12 @@ function buildEarlyRadar(input: {
     });
   }
   for (const tracked of input.trackedUniverse) {
-    if (items.has(tracked.ticker) || tracked.status === "activeCandidate") continue;
-    const hasFreshTrigger = input.newsTriggers.some((trigger) => trigger.ticker?.toUpperCase() === tracked.ticker && trigger.isFreshToday);
+    const key = tickerKey(tracked.ticker);
+    if (items.has(key) || tracked.status === "activeCandidate") continue;
+    const hasFreshTrigger = input.newsTriggers.some((trigger) => trigger.ticker && tickerKey(trigger.ticker) === key && trigger.isFreshToday);
     if (!hasFreshTrigger) continue;
-    items.set(tracked.ticker, {
-      ticker: tracked.ticker,
+    items.set(key, {
+      ticker: key,
       company: tracked.company,
       rank: 0,
       radarReason: tracked.summary,
@@ -1885,11 +2006,12 @@ export async function buildCanonicalTradingSnapshot(): Promise<CanonicalTradingS
   const newsByTicker = new Map(
     newsTriggers
       .filter((trigger) => safeNewsIngestion.isLive && trigger.isFreshToday && trigger.ticker)
-      .map((trigger) => [trigger.ticker!.toUpperCase(), trigger]),
+      .map((trigger) => [tickerKey(trigger.ticker!), trigger]),
   );
   const changeByTicker = new Map<string, string>();
   for (const change of changesResult?.changes ?? []) {
-    if (!changeByTicker.has(change.ticker)) changeByTicker.set(change.ticker, change.reason);
+    const key = tickerKey(change.ticker);
+    if (!changeByTicker.has(key)) changeByTicker.set(key, change.reason);
   }
   const persistedSnapshotsPromise = withTimeout(getLatestCaseStateSnapshots(80).catch(() => [] as RunnerCaseSnapshot[]), 6_000);
   const candidates = discovery
@@ -1904,27 +2026,26 @@ export async function buildCanonicalTradingSnapshot(): Promise<CanonicalTradingS
         const seen = new Set<string>();
         return allDiscovery
           .filter((candidate) => {
-            if (seen.has(candidate.ticker)) return false;
-            seen.add(candidate.ticker);
+            const key = tickerKey(candidate.ticker);
+            if (seen.has(key)) return false;
+            seen.add(key);
             return true;
           })
-          .map((candidate) => toTradingCandidate(candidate, changeByTicker.get(candidate.ticker), snapshotFreshness, newsByTicker))
+          .map((candidate) => toTradingCandidate(candidate, changeByTicker.get(tickerKey(candidate.ticker)), snapshotFreshness, newsByTicker))
           .filter((candidate): candidate is TradingCandidate => Boolean(candidate))
           .sort(sortCandidates)
           .slice(0, 18);
       })()
     : ((await persistedSnapshotsPromise) ?? [])
         .filter((snapshot) => snapshot.source === "discovery")
-        .map((snapshot) => toPersistedCandidate(snapshot, changeByTicker.get(snapshot.ticker)))
+        .map((snapshot) => toPersistedCandidate(snapshot, changeByTicker.get(tickerKey(snapshot.ticker))))
         .filter((candidate): candidate is TradingCandidate => Boolean(candidate))
         .sort(sortCandidates)
         .slice(0, 18);
   const focus = candidates
-    .filter((candidate) =>
-      (candidate.isActiveToday || candidate.freshnessStatus === "afterClose" || candidate.freshnessStatus === "premarketContext") &&
-      (candidate.action === "Agera" || candidate.action === "Het men jaga inte" || candidate.action === "Bevaka")
-    )
-    .slice(0, 5);
+    .filter(isTopSetup)
+    .sort((a, b) => convictionScore(b) - convictionScore(a))
+    .slice(0, 3);
   const coverage = discovery ? coveragePercent(discovery) : 0;
   const bucketCounts = discovery
     ? discovery.bucketCounts
@@ -1946,11 +2067,11 @@ export async function buildCanonicalTradingSnapshot(): Promise<CanonicalTradingS
   const persistedSnapshots = (await persistedSnapshotsPromise) ?? [];
   const recentlyActive = buildRecentlyActive(candidates, persistedSnapshots, changesResult?.changes ?? []);
   const breadth = {
-    hot: candidates.filter((candidate) => candidate.sourceBucket === "HOT").slice(0, 8),
-    watch: candidates.filter((candidate) => candidate.sourceBucket === "WATCH").slice(0, 10),
-    stealth: candidates.filter((candidate) => candidate.sourceBucket === "STEALTH").slice(0, 8),
-    noChase: candidates.filter((candidate) => candidate.sourceBucket === "PARABOLIC_WATCH" || candidate.sourceBucket === "RISK" || candidate.action === "Het men jaga inte").slice(0, 8),
-    recentlyActive,
+    hot: candidates.filter(isTopSetup).slice(0, 3),
+    watch: candidates.filter(isWatchlistSetup).slice(0, 8),
+    stealth: candidates.filter((candidate) => isWatchlistSetup(candidate) && candidate.sourceBucket === "STEALTH").slice(0, 6),
+    noChase: candidates.filter(isDeadMoney).slice(0, 8),
+    recentlyActive: recentlyActive.filter(isDeadMoney).slice(0, 6),
   };
   const trackedUniverse = buildTrackedUniverse({ candidates, recentlyActive, snapshots: persistedSnapshots, discovery });
   const liveCoverageAudit = buildLiveCoverageAudit(trackedUniverse);

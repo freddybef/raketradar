@@ -131,10 +131,11 @@ export async function getLatestCaseStateSnapshots(limit = 200): Promise<RunnerCa
   const seen = new Set<string>();
   const snapshots: RunnerCaseSnapshot[] = [];
   for (const row of data) {
-    if (seen.has(row.ticker)) continue;
-    seen.add(row.ticker);
+    const ticker = String(row.ticker ?? "").trim().toUpperCase();
+    if (!ticker || seen.has(ticker)) continue;
+    seen.add(ticker);
     snapshots.push({
-      ticker: row.ticker,
+      ticker,
       state: row.state,
       score: Number(row.score ?? 0),
       confidence: Number(row.confidence ?? 0),
@@ -153,7 +154,7 @@ export async function saveCaseStateSnapshots(runId: string | null, snapshots: Ru
   const { error } = await supabase.from("case_state_snapshots").insert(
     snapshots.map((snapshot) => ({
       run_id: runId,
-      ticker: snapshot.ticker,
+      ticker: snapshot.ticker.trim().toUpperCase(),
       state: snapshot.state,
       score: snapshot.score,
       confidence: snapshot.confidence,

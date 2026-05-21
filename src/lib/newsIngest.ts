@@ -1,5 +1,5 @@
-import { getSwedishEquityUniverse } from "@/lib/market/swedishEquityUniverse";
 import { extractTriggers, type NewsTrigger } from "./triggerExtraction";
+import { getSwedishEquityUniverse } from "./market/swedishEquityUniverse";
 
 export type NewsSource =
   | "MFN"
@@ -80,16 +80,18 @@ function normalizeText(text: string) {
   return text.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
-function normalizeCompanyName(value: string) {
-  return value
-    .toLowerCase()
-    .replace(/\(publ\)/g, "")
-    .replace(/\bab\b/g, "")
-    .replace(/\bpubl\b/g, "")
-    .replace(/[^a-z0-9åäöæøüé ]/g, " ")
+function normalizeCompanyName(text: string) {
+  return normalizeText(text)
+    .replace(/\b(ab|publ|group|holding|holdings|sweden|sverige)\b/g, "")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
+
+const MANUAL_COMPANY_ALIASES = [
+  { ticker: "SUS", normalized: normalizeCompanyName("Surgical Science") },
+  { ticker: "SUS", normalized: normalizeCompanyName("Surgical Science Sweden") },
+];
 
 function normalizeSource(source?: string): NewsSource | string {
   const value = source ?? "Manual";
@@ -214,16 +216,18 @@ export function attachTickers(
     raw: symbol,
     ticker: symbol.replace(".ST", "").toUpperCase(),
   }));
-  const companyAliases = getSwedishEquityUniverse()
-    .filter((entry) => knownSymbols.includes(entry.ticker))
-    .map((entry) => ({
-      ticker: entry.ticker,
-      normalized: normalizeCompanyName(entry.companyName),
-    }))
-    .filter((alias) => alias.normalized.length > 3);
+  const companyAliases = [
+    ...getSwedishEquityUniverse()
+      .filter((entry) => knownSymbols.includes(entry.ticker))
+      .map((entry) => ({
+        ticker: entry.ticker,
+        normalized: normalizeCompanyName(entry.companyName),
+      })),
+    ...MANUAL_COMPANY_ALIASES,
+  ].filter((alias) => alias.normalized.length > 3);
 
   return items.map((item) => {
-    const searchableText = normalizeCompanyName(`${item.title} ${item.rawText} ${item.summary ?? ""}`);
+    const normalizedCompanyText = normalizeCompanyName(`${item.title} ${item.rawText} ${item.normalizedText}`);
     const found = symbols
       .filter(
         (symbol) =>
@@ -231,10 +235,10 @@ export function attachTickers(
           item.normalizedText.includes(symbol.raw.toLowerCase())
       )
       .map((symbol) => symbol.ticker);
-    const aliasMatches = companyAliases
-      .filter((alias) => searchableText.includes(alias.normalized))
+    const aliasFound = companyAliases
+      .filter((alias) => normalizedCompanyText.includes(alias.normalized))
       .map((alias) => alias.ticker);
-    const tickers = Array.from(new Set([...item.tickers, ...found, ...aliasMatches]));
+    const tickers = Array.from(new Set([...item.tickers, ...found, ...aliasFound]));
 
     return {
       ...item,

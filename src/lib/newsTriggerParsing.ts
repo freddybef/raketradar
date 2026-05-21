@@ -183,7 +183,7 @@ function classifyTrigger(headline: string): {
 } {
   const text = normalize(headline);
   const tags: string[] = [];
-  if (/market signal|börsen|omx|index|ränta|inflation|usa|futures|makro|geopolitik|fed|ecb|olja|guld|dollar|kronan|wall street|asienbörser|morgonrapport|börsöppning|börsstängning|marknadskommentar|teknisk analys|podcast|webbtv|kalender/.test(text)) {
+  if (/market signal|börsen|omx|index|ränta|inflation|usa|futures|makro|geopolitik|fed|ecb|olja|guld|dollar|kronan|wall street|asienbörser|morgonrapport|börsöppning|börsstängning|marknadskommentar|teknisk analys|podcast|webbtv|kalender|iran|israel|krig|militär|attack|sanktion|handelskrig/.test(text)) {
     tags.push("macro");
     return {
       triggerType: "MACRO_NOISE",
@@ -335,17 +335,6 @@ function classifyTrigger(headline: string): {
       baseStrength: 38,
       secondDerivativeScore: 18,
       summary: "Riktkurs/analytiker är lågprioritet utan small-cap och live reaction.",
-    };
-  }
-  if (/market signal|börsen|omx|index|ränta|inflation|usa|futures|makro|geopolitik|fed|ecb|olja|guld|dollar|kronan|wall street|asienbörser/.test(text)) {
-    tags.push("macro");
-    return {
-      triggerType: "MACRO_NOISE",
-      narrativeTriggerType: "UNKNOWN",
-      thematicTags: tags,
-      baseStrength: 18,
-      secondDerivativeScore: 10,
-      summary: "Makro/general headline. Bra kontext men normalt ingen bolagsspecifik trigger.",
     };
   }
   return {
