@@ -129,6 +129,21 @@ function normalize(value: string) {
   return value.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
+function isGenericMarketHeadline(text: string) {
+  return /market signal|börsen|borsen|stockholmsbörsen|stockholmsborsen|omx|index|large cap|small cap|mid cap|ränta|ranta|inflation|usa|futures|terminer|makro|geopolitik|fed|ecb|olja|guld|dollar|kronan|wall street|asienbörser|asienborser|europabörser|europaborser|morgonrapport|börsöppning|borsoppning|börsstängning|borsstangning|marknadskommentar|teknisk analys|podcast|webbtv|kalender|iran|israel|krig|militär|militar|attack|sanktion|handelskrig|marknaden|aktierna|bred uppgång|bred nedgång|stänger|stanger|öppnar|oppnar/.test(text);
+}
+
+function isCompanySpecificOrderHeadline(text: string) {
+  const hasOrderAction =
+    /\b(wins?|receives?|lands?|secures?|awarded|signs?)\s+(?:an?\s+)?(?:order|contract|agreement)\b/.test(text) ||
+    /\b(vinner|erhåller|erhaller|får|far|tecknar|ingår|ingar|tilldelas)\s+(?:en\s+|ett\s+)?(?:order|kontrakt|avtal|ramavtal|kundorder)\b/.test(text);
+  const hasFramework = /\bramavtal|framework agreement|avropsavtal\b/.test(text);
+  const hasValue = /\b\d+(?:[,.]\d+)?\s*(?:msek|mkr|sek|mnkr|miljoner|million|meur|keur|eur|usd)\b/.test(text);
+  const hasNamedCounterparty = /\b(?:från|fran|med|till|for|from|with)\s+[a-zåäö0-9][a-zåäö0-9&.\- ]{2,}\b/.test(text);
+  const hasCustomerWord = /\bkund|customer|motpart|counterparty|beställning|bestallning\b/.test(text);
+  return (hasOrderAction || hasFramework) && (hasValue || hasNamedCounterparty || hasCustomerWord || hasFramework);
+}
+
 function normalizeTicker(value: string) {
   return value
     .replace(/\.(ST|SS|CO|HE|OL)$/i, "")
@@ -185,7 +200,7 @@ function classifyTrigger(headline: string): {
 } {
   const text = normalize(headline);
   const tags: string[] = [];
-  if (/market signal|börsen|omx|index|ränta|inflation|usa|futures|makro|geopolitik|fed|ecb|olja|guld|dollar|kronan|wall street|asienbörser|morgonrapport|börsöppning|börsstängning|marknadskommentar|teknisk analys|podcast|webbtv|kalender|iran|israel|krig|militär|attack|sanktion|handelskrig/.test(text)) {
+  if (isGenericMarketHeadline(text)) {
     tags.push("macro");
     return {
       triggerType: "MACRO_NOISE",
@@ -229,7 +244,7 @@ function classifyTrigger(headline: string): {
       summary: "Produktions-/kapacitetssignal som kan flytta bolaget från utveckling mot kommersiell leverans.",
     };
   }
-  if (/order|kontrakt|ramavtal|avtal|contract|kundorder/.test(text)) {
+  if (isCompanySpecificOrderHeadline(text)) {
     tags.push("order", "revenue");
     return {
       triggerType: "ORDER_CONTRACT",
