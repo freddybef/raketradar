@@ -66,7 +66,7 @@ const BASE_REGISTRY: SwedishEquityRegistryEntry[] = [
   { ticker: "NORDNET", aliases: ["NORDNET"], companyName: "Nordnet AB", exchange: "Sweden", isin: "SE0015192067", country: "SE", currency: "SEK" },
   { ticker: "LOGISTEA", aliases: ["LOGISTEA", "LOGISTEA B"], companyName: "Logistea AB", exchange: "Sweden", country: "SE", currency: "SEK" },
   { ticker: "NORDREST", aliases: ["NORDREST"], companyName: "Nordrest Holding AB", exchange: "First North", country: "SE", currency: "SEK" },
-  { ticker: "MEDI", aliases: ["MEDI", "MEDIVIR"], companyName: "Medivir AB", exchange: "Sweden", isin: "SE0000273294", country: "SE", currency: "SEK" },
+  { ticker: "MVIR", aliases: ["MVIR", "MVIR B", "MVIRB", "MEDI", "MEDIVIR"], companyName: "Medivir AB", exchange: "Sweden", isin: "SE0000273294", country: "SE", currency: "SEK" },
 ];
 
 const EXTRA_TRADER_ALIASES: Record<string, string[]> = {

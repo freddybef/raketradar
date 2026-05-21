@@ -15,3 +15,37 @@ export function verifyBioxIsBlockedFromSwedishWarRoom() {
     result,
   };
 }
+
+export function verifyMedivirMenticeIdentitiesAreDistinct() {
+  const medivirFromCurrentTicker = resolveTickerIdentity({
+    ticker: "MVIR",
+    companyName: "Medivir AB",
+    source: "identity-regression-test",
+    swedishFirstMode: true,
+  });
+  const medivirFromOldClassBTicker = resolveTickerIdentity({
+    ticker: "MVIR B",
+    companyName: "Medivir AB",
+    source: "identity-regression-test",
+    swedishFirstMode: true,
+  });
+  const mentice = resolveTickerIdentity({
+    ticker: "MNTC",
+    companyName: "Mentice AB",
+    source: "identity-regression-test",
+    swedishFirstMode: true,
+  });
+
+  return {
+    pass:
+      medivirFromCurrentTicker.identity.ticker === "MVIR" &&
+      medivirFromCurrentTicker.identity.companyName === "Medivir AB" &&
+      medivirFromOldClassBTicker.identity.ticker === "MVIR" &&
+      medivirFromOldClassBTicker.identity.companyName === "Medivir AB" &&
+      mentice.identity.ticker === "MNTC" &&
+      mentice.identity.companyName === "Mentice AB",
+    medivirFromCurrentTicker,
+    medivirFromOldClassBTicker,
+    mentice,
+  };
+}

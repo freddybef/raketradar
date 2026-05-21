@@ -84,6 +84,8 @@ const MANUAL_COMPANY_ALIASES: Array<{ pattern: RegExp; ticker: string; company: 
   { pattern: /\bplejd\b/i, ticker: "PLEJD", company: "Plejd AB", marketCapSensitivity: 70 },
   { pattern: /\bwyld networks\b|\bwyld\b/i, ticker: "WYLD", company: "Wyld Networks AB", marketCapSensitivity: 84 },
   { pattern: /\bnosa plugs\b|\bnosa\b/i, ticker: "NOSA", company: "Nosa Plugs AB", marketCapSensitivity: 84 },
+  { pattern: /\bmedivir\b|\bmvir(?:\s?b)?\b/i, ticker: "MVIR", company: "Medivir AB", marketCapSensitivity: 82 },
+  { pattern: /\bmentice\b|\bmntc\b/i, ticker: "MNTC", company: "Mentice AB", marketCapSensitivity: 72 },
 ];
 
 function escapeRegExp(value: string) {

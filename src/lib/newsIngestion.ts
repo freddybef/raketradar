@@ -205,6 +205,8 @@ const MANUAL_NORDIC_ALIASES: Array<{ ticker: string; company: string; alias: str
   { ticker: "NEXAM", company: "Nexam Chemical Holding AB", alias: "nexam chemical" },
   { ticker: "MILDEF", company: "MilDef Group AB", alias: "mildef" },
   { ticker: "YUBICO", company: "Yubico AB", alias: "yubico" },
+  { ticker: "MVIR", company: "Medivir AB", alias: "medivir" },
+  { ticker: "MNTC", company: "Mentice AB", alias: "mentice" },
 ];
 
 const NORDIC_COMPANY_ALIASES = [
