@@ -1373,7 +1373,10 @@ function sortCandidates(a: TradingCandidate, b: TradingCandidate) {
     "Hog risk": 3,
     Undvik: 4,
   };
-  return convictionScore(b) - convictionScore(a) || order[a.action] - order[b.action] || b.score - a.score || b.continuation - a.continuation;
+  return convictionScore(b) - convictionScore(a) ||
+    order[a.action] - order[b.action] ||
+    b.score - a.score ||
+    effectiveContinuationFor(b) - effectiveContinuationFor(a);
 }
 
 function continuationQualityScore(candidate: TradingCandidate) {
@@ -1409,7 +1412,79 @@ function isLowQualitySqueeze(candidate: TradingCandidate) {
     continuationQualityScore(candidate) < 60;
 }
 
+function continuationDecayScore(candidate: TradingCandidate) {
+  const riskDecay =
+    candidate.risk > 75 ? 28 :
+      candidate.risk > 65 ? 22 :
+        candidate.risk > 55 ? 14 :
+          0;
+  const rvolDecay =
+    candidate.rvol < 1.25 ? 26 :
+      candidate.rvol < 1.55 ? 14 :
+        0;
+  const confirmationDecay = candidate.confirmationCount < 2 ? 18 : candidate.confirmationCount < 3 ? 10 : 0;
+  const attentionDecay = candidate.marketAttentionShift < 35 ? 18 : candidate.marketAttentionShift < 48 ? 10 : 0;
+  const exhaustionDecay: Record<RepricingPhase, number> = {
+    REPRICING: 0,
+    AWAKENING: 2,
+    CROWDED: 16,
+    EXHAUSTION: 30,
+    DEAD: 36,
+  };
+  const phaseDecay = exhaustionDecay[candidate.repricingPhase];
+  const signalDecay =
+    candidate.signalQuality === "DEAD" ? 32 :
+      candidate.signalQuality === "EXHAUSTED" ? 28 :
+        candidate.signalQuality === "STALLED" ? 16 :
+          0;
+  const priceOnlyDecay =
+    candidate.triggerVerificationState === "PRICE_ONLY" && candidate.narrativeTriggerType === "UNKNOWN"
+      ? 16
+      : 0;
+  const squeezeDecay =
+    candidate.catalystType === "short_squeeze" &&
+    candidate.triggerVerificationState !== "VERIFIED" &&
+    candidate.triggerVerificationState !== "THEMATIC"
+      ? 14
+      : 0;
+  const staleDecay =
+    !candidate.isActiveToday
+      ? candidate.freshnessStatus === "recentMemory" ? 24 :
+        candidate.freshnessStatus === "stale" ? 34 :
+          12
+      : 0;
+  const parabolicDecay =
+    candidate.sourceBucket === "PARABOLIC_WATCH" ||
+    candidate.sourceBucket === "RISK" ||
+    candidate.movePct >= 18 ||
+    candidate.dayChangePct >= 22 ||
+    candidate.intradayMomentumPct >= 18
+      ? candidate.risk > 55 || candidate.repricingPhase !== "REPRICING" ? 14 : 6
+      : 0;
+  const liquidityDecay = candidate.rvol < 1.55 && candidate.marketAttentionShift < 48 ? 8 : 0;
+
+  return Math.max(0, Math.min(100, Math.round(
+    riskDecay +
+      rvolDecay +
+      confirmationDecay +
+      attentionDecay +
+      phaseDecay +
+      signalDecay +
+      priceOnlyDecay +
+      squeezeDecay +
+      staleDecay +
+      parabolicDecay +
+      liquidityDecay +
+      candidate.decayScore * 0.18,
+  )));
+}
+
+function effectiveContinuationFor(candidate: TradingCandidate) {
+  return Math.max(0, Math.min(100, Math.round(candidate.continuation - continuationDecayScore(candidate))));
+}
+
 function convictionScore(candidate: TradingCandidate) {
+  const effectiveContinuation = effectiveContinuationFor(candidate);
   const freshnessBoost =
     candidate.isActiveToday
       ? 18
@@ -1433,7 +1508,7 @@ function convictionScore(candidate: TradingCandidate) {
     VERIFIED: candidate.catalystBoostApplied ? 16 : 2,
     THEMATIC: 4,
     UNVERIFIED: -4,
-    PRICE_ONLY: candidate.rvol >= 2.8 && candidate.continuation >= 75 ? -2 : -14,
+    PRICE_ONLY: candidate.rvol >= 2.8 && effectiveContinuation >= 75 ? -2 : -14,
   };
 
   const phaseBoost: Record<RepricingPhase, number> = {
@@ -1449,7 +1524,7 @@ function convictionScore(candidate: TradingCandidate) {
     Math.min(16, Math.max(0, candidate.marketAttentionShift - 45) * 0.22);
 
   const structure =
-    Math.min(22, Math.max(0, candidate.continuation - 55) * 0.75) +
+    Math.min(22, Math.max(0, effectiveContinuation - 55) * 0.75) +
     Math.min(12, Math.max(0, candidate.confirmationCount - 2) * 5);
 
   const continuationQuality = continuationQualityScore(candidate);
@@ -1464,23 +1539,27 @@ function convictionScore(candidate: TradingCandidate) {
       verificationBoost[candidate.triggerVerificationState] +
       participation +
       structure +
-      continuationQuality * 0.18 -
+      continuationQuality * 0.18 +
+      effectiveContinuation * 0.1 -
       squeezeQualityPenalty -
       candidate.risk * 0.22 -
       candidate.decayScore * 0.42,
   );
 }
 function isTopSetup(candidate: TradingCandidate) {
+  const effectiveContinuation = effectiveContinuationFor(candidate);
+  const continuationDecay = continuationDecayScore(candidate);
   const strongSignal = candidate.signalQuality === "FRESH_IGNITION" || candidate.signalQuality === "ACTIVE_CONTINUATION";
   const realTrigger =
     candidate.triggerVerificationState === "VERIFIED" ||
     candidate.triggerVerificationState === "THEMATIC" ||
-    (candidate.triggerVerificationState === "PRICE_ONLY" && candidate.rvol >= 2.8 && candidate.continuation >= 78);
+    (candidate.triggerVerificationState === "PRICE_ONLY" && candidate.rvol >= 2.8 && effectiveContinuation >= 78);
   return candidate.isActiveToday &&
     candidate.action === "Agera" &&
     candidate.repricingPhase === "REPRICING" &&
     strongSignal &&
-    candidate.continuation >= 70 &&
+    effectiveContinuation >= 68 &&
+    continuationDecay <= 18 &&
     candidate.rvol >= 1.55 &&
     candidate.risk <= 65 &&
     candidate.decayScore <= 32 &&
@@ -1493,6 +1572,7 @@ convictionScore(candidate) >= 72;
 }
 
 function isWatchlistSetup(candidate: TradingCandidate) {
+  const effectiveContinuation = effectiveContinuationFor(candidate);
   if (isTopSetup(candidate)) return false;
   if (candidate.action === "Undvik" || candidate.action === "Hog risk") return false;
   if (candidate.repricingPhase === "DEAD" || candidate.repricingPhase === "EXHAUSTION") return false;
@@ -1504,10 +1584,11 @@ function isWatchlistSetup(candidate: TradingCandidate) {
     candidate.repricingPhase === "REPRICING" ||
     candidate.signalQuality === "RECLAIM_SETUP" ||
     candidate.signalQuality === "EARLY_WATCH" ||
-    (candidate.continuation >= 58 && candidate.rvol >= 1.25 && candidate.risk < 78);
+    (effectiveContinuation >= 52 && candidate.rvol >= 1.25 && candidate.risk < 78);
 }
 
 function isDeadMoney(candidate: TradingCandidate) {
+  const effectiveContinuation = effectiveContinuationFor(candidate);
   return candidate.action === "Undvik" ||
     candidate.repricingPhase === "DEAD" ||
     candidate.repricingPhase === "EXHAUSTION" ||
@@ -1515,7 +1596,7 @@ function isDeadMoney(candidate: TradingCandidate) {
     candidate.signalQuality === "EXHAUSTED" ||
     candidate.decayScore >= 70 ||
     (!candidate.isActiveToday && candidate.freshnessStatus !== "premarketContext" && candidate.freshnessStatus !== "afterClose") ||
-    (candidate.continuation < 45 && candidate.rvol < 1.2) ||
+    (effectiveContinuation < 35 && candidate.rvol < 1.2) ||
     (candidate.triggerVerificationState === "PRICE_ONLY" && candidate.narrativeTriggerType === "UNKNOWN" && candidate.rvol < 1.35);
 }
 
@@ -1786,13 +1867,14 @@ function positionStateFor(item: TrackedTicker): PositionManagementState {
     if ((item.lastKnownScore ?? 0) >= 55 || item.lastKnownState) return "MOMENTUM_DEAD";
     return "NO_ADD";
   }
-  if (candidate.risk >= 85 && candidate.continuation < 50) return "EXIT_RISK";
-  if (candidate.sourceBucket === "RISK" && candidate.continuation < 45) return "EXIT_RISK";
+  const effectiveContinuation = effectiveContinuationFor(candidate);
+  if (candidate.risk >= 85 && effectiveContinuation < 50) return "EXIT_RISK";
+  if (candidate.sourceBucket === "RISK" && effectiveContinuation < 45) return "EXIT_RISK";
   if (candidate.sourceBucket === "PARABOLIC_WATCH" || candidate.action === "Het men jaga inte") return "TRIM";
   if (candidate.sourceBucket === "RISK" || candidate.risk >= 70) return "TIGHTEN_STOP";
-  if (candidate.continuation < 45 && candidate.rvol < 1.2) return "MOMENTUM_DEAD";
-  if (candidate.continuation < 55 && candidate.movePct < 0) return "FAILED_CONTINUATION";
-  if (candidate.setupType === "Pullback valid" || (candidate.risk >= 45 && candidate.risk < 65 && candidate.continuation >= 60)) return "FIRST_PULLBACK_VALID";
+  if (effectiveContinuation < 45 && candidate.rvol < 1.2) return "MOMENTUM_DEAD";
+  if (effectiveContinuation < 55 && candidate.movePct < 0) return "FAILED_CONTINUATION";
+  if (candidate.setupType === "Pullback valid" || (candidate.risk >= 45 && candidate.risk < 65 && effectiveContinuation >= 60)) return "FIRST_PULLBACK_VALID";
   if (candidate.sourceBucket === "STEALTH" || candidate.action === "Bevaka") return "NO_ADD";
   return "HOLD";
 }
@@ -1900,23 +1982,24 @@ function priorityStateFor(input: {
 }): PriorityState {
   const { candidate, position, tracked } = input;
   if (candidate) {
+    const effectiveContinuation = effectiveContinuationFor(candidate);
     if (candidate.signalQuality === "DEAD") return "DEAD";
     if (candidate.signalQuality === "EXHAUSTED") return "AVOID";
     if (candidate.signalQuality === "STALLED" && candidate.decayScore >= 55) return "LOW_PRIORITY";
     if (!candidate.isActiveToday) {
       if (candidate.freshnessStatus === "premarketContext" || candidate.freshnessStatus === "afterClose") return "REENTRY_WATCH";
-      if (candidate.freshnessStatus === "recentMemory" && (candidate.continuation < 45 || candidate.rvol < 1.2)) return "DEAD";
+      if (candidate.freshnessStatus === "recentMemory" && (effectiveContinuation < 45 || candidate.rvol < 1.2)) return "DEAD";
       return "LOW_PRIORITY";
     }
     if (
       candidate.triggerVerificationState === "PRICE_ONLY" &&
       candidate.narrativeTriggerType === "UNKNOWN" &&
       candidate.rvol < 2.8 &&
-      candidate.continuation < 78
+      effectiveContinuation < 78
     ) return "LOW_PRIORITY";
     const majorAcceleration =
       candidate.action === "Agera" &&
-      candidate.continuation >= 70 &&
+      effectiveContinuation >= 70 &&
       candidate.rvol >= 1.5 &&
       candidate.risk < 70 &&
       candidate.decayScore < 35 &&
@@ -1929,7 +2012,7 @@ function priorityStateFor(input: {
       candidate.repricingProbability >= 58 &&
       candidate.risk < 78 &&
       candidate.decayScore < 45
-    ) return candidate.continuation >= 62 || candidate.rvol >= 1.35 ? "WATCH_CLOSELY" : "REENTRY_WATCH";
+    ) return effectiveContinuation >= 62 || candidate.rvol >= 1.35 ? "WATCH_CLOSELY" : "REENTRY_WATCH";
     if (
       candidate.hasFreshFundamentalCatalyst &&
       candidate.narrativeStrength >= 72 &&
@@ -1938,9 +2021,9 @@ function priorityStateFor(input: {
       candidate.risk < 75
     ) return "WATCH_CLOSELY";
     if (candidate.sourceBucket === "PARABOLIC_WATCH" || candidate.action === "Het men jaga inte" || candidate.risk >= 80) return "AVOID";
-    if (candidate.continuation >= 68 && candidate.risk < 68) return "WATCH_CLOSELY";
+    if (effectiveContinuation >= 68 && candidate.risk < 68) return "WATCH_CLOSELY";
     if (candidate.sourceBucket === "STEALTH" || candidate.setupType === "Pullback valid") return "REENTRY_WATCH";
-    if (candidate.continuation < 40 && candidate.rvol < 1.15) return "DEAD";
+    if (effectiveContinuation < 40 && candidate.rvol < 1.15) return "DEAD";
     return "LOW_PRIORITY";
   }
   if (position?.state === "EXIT_RISK" || position?.state === "TRIM" || position?.state === "TIGHTEN_STOP") return "AVOID";
@@ -2018,7 +2101,7 @@ function priorityUrgency(state: PriorityState, position?: PositionManagementDeci
     LOW_PRIORITY: 25,
   };
   const candidateBoost = candidate
-    ? Math.min(12, Math.max(0, candidate.continuation - 65) / 2) + Math.min(8, Math.max(0, candidate.rvol - 1.5) * 4)
+    ? Math.min(12, Math.max(0, effectiveContinuationFor(candidate) - 65) / 2) + Math.min(8, Math.max(0, candidate.rvol - 1.5) * 4)
     : 0;
   const discoveryBoost = candidate
     ? Math.round(candidate.discoveryScore * 0.18) +
