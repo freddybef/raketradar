@@ -120,11 +120,24 @@ export const manualMockNewsProvider: NewsProvider = {
   },
 };
 
+const DEFAULT_NORDIC_RSS_FEEDS = [
+  "https://www.efn.se/rss",
+  "https://www.placera.se/placera.rss.xml",
+  "https://www.avanza.se/placera/redaktionellt/alla-nyheter.rss",
+  "https://www.bequoted.com/rss",
+  "https://spotlightstockmarket.com/sv/rss/pressmeddelanden",
+  "https://www.ngm.se/rss/press-releases",
+];
+
 function splitFeedEnv(value?: string) {
   return (value ?? "")
     .split(/[\n,;]+/)
     .map((url) => url.trim())
     .filter(Boolean);
+}
+
+function defaultRssFeedsEnabled() {
+  return process.env.RAKETRADAR_DISABLE_DEFAULT_RSS_FEEDS !== "1";
 }
 
 function rssFeedUrls() {
@@ -133,6 +146,7 @@ function rssFeedUrls() {
     ...splitFeedEnv(process.env.NEWS_FEED_URLS),
     ...splitFeedEnv(process.env.NEWS_FEED_URL),
     ...splitFeedEnv(process.env.RAKETRADAR_NEWS_RSS_FEEDS),
+    ...(defaultRssFeedsEnabled() ? DEFAULT_NORDIC_RSS_FEEDS : []),
   ])];
 }
 
@@ -169,9 +183,11 @@ function categoryGuess(headline: string, explicitCategory?: string) {
   if (explicitCategory) return explicitCategory;
   const text = headline.toLowerCase();
   if (/rapport|q[1-4]|vinst|ebit/.test(text)) return "rapport";
-  if (/order|kontrakt|avtal|samarbete|partner/.test(text)) return "avtal";
-  if (/fda|ce\b|gmp|tillstånd|certifikat/.test(text)) return "regulatoriskt";
-  if (/riktkurs|analytiker/.test(text)) return "analys";
+  if (/order|kontrakt|avtal|samarbete|partner|upphandling|ramavtal/.test(text)) return "avtal";
+  if (/fda|ce\b|gmp|tillstånd|certifikat|godkännande/.test(text)) return "regulatoriskt";
+  if (/riktkurs|analytiker|rekommendation/.test(text)) return "analys";
+  if (/emission|företrädesemission|riktad emission|finansiering/.test(text)) return "finansiering";
+  if (/insyn|insider|köper aktier|säljer aktier/.test(text)) return "insyn";
   return "nyhet";
 }
 
@@ -216,6 +232,7 @@ const MANUAL_NORDIC_ALIASES: Array<{ ticker: string; company: string; alias: str
   { ticker: "YUBICO", company: "Yubico AB", alias: "yubico" },
   { ticker: "MVIR", company: "Medivir AB", alias: "medivir" },
   { ticker: "MNTC", company: "Mentice AB", alias: "mentice" },
+  { ticker: "VIVE", company: "Vivesto AB", alias: "vivesto" },
 ];
 
 const NORDIC_COMPANY_ALIASES = [
@@ -236,10 +253,11 @@ const NORDIC_COMPANY_ALIASES = [
 function resolveNordicCompany(headline: string): { ticker?: string; company?: string } {
   const tickerMatch = headline.match(/\b[A-ZÅÄÖ]{2,8}(?:\s[AB])?(?:\.(?:ST|SS|CO|HE|OL))?\b/g)
     ?.map(normalizeNordicTicker)
-    .find((candidate) => SWEDISH_UNIVERSE.some((entry) => entry.ticker === candidate));
+    .find((candidate) => SWEDISH_UNIVERSE.some((entry) => entry.ticker === candidate) || MANUAL_NORDIC_ALIASES.some((entry) => entry.ticker === candidate));
   if (tickerMatch) {
-    const entry = SWEDISH_UNIVERSE.find((candidate) => candidate.ticker === tickerMatch);
-    return { ticker: tickerMatch, company: entry?.companyName };
+    const entry = SWEDISH_UNIVERSE.find((candidate) => candidate.ticker === tickerMatch)
+      ?? MANUAL_NORDIC_ALIASES.find((candidate) => candidate.ticker === tickerMatch);
+    return { ticker: tickerMatch, company: entry?.companyName ?? entry?.company };
   }
   const normalized = normalizeCompanyName(headline);
   const aliasMatch = NORDIC_COMPANY_ALIASES
@@ -258,8 +276,8 @@ function looksTradableHeadline(headline: string, category?: string) {
   const broadMarketNoise = /b\u00f6rsen|omx|index|futures|r\u00e4nta|inflation|fed|ecb|wall street|asienb\u00f6rser|geopolitik|olja|guld|dollar|kronan|valuta|terminer|usa-b\u00f6rs|europab\u00f6rs|stockholmsb\u00f6rsen/.test(text);
   const genericFeedNoise = /morgonrapport|b\u00f6rs\u00f6ppning|b\u00f6rsst\u00e4ngning|veckan som kommer|dagens aktier|marknadskommentar|teknisk analys|podcast|webbtv|lista:|kalender/.test(text);
   if ((broadMarketNoise || genericFeedNoise) && !hasCompany) return false;
-  if (!hasCompany && !/mfn|cision|bequoted|pressmeddelande/.test(text)) return false;
-  const catalyst = /order|kontrakt|ramavtal|avtal|partner|samarbete|finansiering|emission|rapport|q[1-4]\b|vinst|guidance|prognos|insider|köper aktier|säljer aktier|fda|ce\b|gmp|tillstånd|certifikat|produktion|kapacitet|förvärv|bud|uppköp|notering|pressmeddelande/.test(text);
+  if (!hasCompany && !/mfn|cision|bequoted|pressmeddelande|spotlight|ngm|first north|nasdaq first north/.test(text)) return false;
+  const catalyst = /order|kontrakt|ramavtal|avtal|partner|samarbete|finansiering|emission|företrädesemission|riktad emission|rapport|q[1-4]\b|vinst|guidance|prognos|insyn|insider|köper aktier|säljer aktier|fda|ce\b|gmp|tillstånd|certifikat|godkännande|produktion|kapacitet|förvärv|bud|uppköp|notering|pressmeddelande|licens|patent|studie|fas\s?[123]|positiva resultat|lanserar|distributionsavtal|återupptar|tecknar|erhåller|vinner/.test(text);
   const broadNoise = /börsen|omx|index|futures|ränta|inflation|fed|ecb|wall street|asienbörser|geopolitik|olja|guld|dollar|kronan/.test(text);
   if (catalyst) return true;
   if (broadNoise && !tickerGuess(headline)) return false;
