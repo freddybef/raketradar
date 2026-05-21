@@ -9,6 +9,7 @@ import { yahooLiveMarketReactionProvider } from "@/lib/providers/liveMarketReact
 export type TradingAction = "Agera" | "Bevaka" | "Het men jaga inte" | "Hog risk" | "Undvik";
 export type FreshnessStatus = "activeToday" | "premarketContext" | "afterClose" | "recentMemory" | "stale";
 export type SignalQuality = "FRESH_IGNITION" | "ACTIVE_CONTINUATION" | "EARLY_WATCH" | "STALLED" | "EXHAUSTED" | "DEAD" | "RECLAIM_SETUP";
+export type RepricingPhase = "DEAD" | "AWAKENING" | "REPRICING" | "CROWDED" | "EXHAUSTION";
 export type NarrativeTriggerType =
   | "REPORT_REPRICING"
   | "COMMERCIALIZATION_SHIFT"
@@ -63,6 +64,7 @@ export interface TradingCandidate {
   decayScore: number;
   staleReason: string | null;
   signalQuality: SignalQuality;
+  repricingPhase: RepricingPhase;
   narrativeTriggerType: NarrativeTriggerType;
   narrativeStrength: number;
   narrativeFreshness: number;
@@ -469,6 +471,79 @@ function assessSignalQuality(input: {
     staleReason,
     signalQuality,
   };
+}
+
+export interface RepricingPhaseInput {
+  dayChangePct: number;
+  intradayMomentumPct: number;
+  rvol: number;
+  continuation: number;
+  risk: number;
+  isActiveToday: boolean;
+  freshnessStatus: FreshnessStatus;
+  signalQuality?: SignalQuality;
+  hasFreshFundamentalCatalyst?: boolean;
+  triggerVerificationState?: TriggerVerificationState;
+  sourceBucket?: DiscoveryBucket;
+  recentlyActive?: boolean;
+}
+
+export function classifyRepricingPhase(input: RepricingPhaseInput): RepricingPhase {
+  const move = Math.max(input.dayChangePct, input.intradayMomentumPct);
+  const hasSessionContext =
+    input.isActiveToday || input.freshnessStatus === "premarketContext" || input.freshnessStatus === "afterClose";
+  const verifiedOrNarrative =
+    input.hasFreshFundamentalCatalyst ||
+    input.triggerVerificationState === "VERIFIED" ||
+    input.triggerVerificationState === "THEMATIC";
+  const constructiveSignal =
+    input.signalQuality === "FRESH_IGNITION" ||
+    input.signalQuality === "ACTIVE_CONTINUATION" ||
+    input.signalQuality === "RECLAIM_SETUP" ||
+    input.signalQuality === "EARLY_WATCH";
+
+  if (input.signalQuality === "DEAD" || input.freshnessStatus === "stale") return "DEAD";
+  if (!hasSessionContext && !input.recentlyActive) return "DEAD";
+  if (input.freshnessStatus === "recentMemory" && input.rvol < 1.5) return "DEAD";
+
+  if (input.signalQuality === "EXHAUSTED") return "EXHAUSTION";
+  if (move >= 3 && input.rvol < 1.2) return "EXHAUSTION";
+  if (input.continuation < 45 && input.risk >= 65) return "EXHAUSTION";
+  if (move >= 12 && input.risk >= 72 && input.continuation < 62) return "EXHAUSTION";
+
+  if (
+    input.isActiveToday &&
+    input.continuation >= 70 &&
+    input.rvol >= 1.55 &&
+    input.risk <= 72 &&
+    (constructiveSignal || verifiedOrNarrative)
+  ) {
+    return "REPRICING";
+  }
+
+  if (
+    input.isActiveToday &&
+    move >= 2 &&
+    input.rvol >= 1.35 &&
+    input.continuation >= 55 &&
+    input.risk < 75 &&
+    input.sourceBucket !== "RISK" &&
+    input.sourceBucket !== "PARABOLIC_WATCH"
+  ) {
+    return "AWAKENING";
+  }
+
+  if (
+    input.sourceBucket === "RISK" ||
+    input.sourceBucket === "PARABOLIC_WATCH" ||
+    (move >= 15 && (input.risk >= 60 || input.continuation < 65))
+  ) {
+    return "CROWDED";
+  }
+
+  if (input.continuation < 50 || input.risk >= 78 || input.rvol < 1.15) return "EXHAUSTION";
+  if (hasSessionContext && input.rvol >= 1.2 && input.continuation >= 50) return "AWAKENING";
+  return "DEAD";
 }
 
 function coveragePercent(result: AutonomousDiscoveryResult) {
@@ -952,19 +1027,8 @@ function toTradingCandidate(
     triggerVerificationState,
     hasLiveNewsTrigger: Boolean(newsTrigger?.isFreshToday),
   });
+  const risk = riskScore(candidate);
   const rawAction = actionFor(candidate);
-  const action: TradingAction =
-    !freshness.isActiveToday
-      ? freshness.freshnessStatus === "premarketContext" || freshness.freshnessStatus === "afterClose"
-        ? "Bevaka"
-        : "Undvik"
-      : signalQuality.signalQuality === "DEAD" || signalQuality.signalQuality === "EXHAUSTED"
-        ? "Undvik"
-        : signalQuality.signalQuality === "STALLED" && rawAction === "Agera"
-          ? "Bevaka"
-          : signalQuality.confirmationCount < 2 && rawAction === "Agera"
-            ? "Bevaka"
-            : rawAction;
   const narrativeBoost =
     narrative.hasFreshFundamentalCatalyst && freshness.isActiveToday
       ? Math.round(narrative.narrativeStrength * 0.12 + narrative.repricingProbability * 0.08)
@@ -978,6 +1042,40 @@ function toTradingCandidate(
       : candidate.reaction.relativeVolume < 1.35 || candidate.reaction.activeTraderAttention < 35 || candidate.reaction.marketAggression < 35
         ? Math.min(candidate.reaction.continuationProbability, 58)
         : candidate.reaction.continuationProbability;
+  const repricingPhase = classifyRepricingPhase({
+    dayChangePct: candidate.reaction.dayChangePct,
+    intradayMomentumPct: candidate.reaction.intradayMomentumPct ?? candidate.reaction.intradayMomentum,
+    rvol: candidate.reaction.relativeVolume,
+    continuation: effectiveContinuation,
+    risk,
+    isActiveToday: freshness.isActiveToday,
+    freshnessStatus: freshness.freshnessStatus,
+    signalQuality: signalQuality.signalQuality,
+    hasFreshFundamentalCatalyst: narrative.hasFreshFundamentalCatalyst,
+    triggerVerificationState,
+    sourceBucket: candidate.bucket,
+    recentlyActive: Boolean(change),
+  });
+  const action: TradingAction =
+    !freshness.isActiveToday
+      ? freshness.freshnessStatus === "premarketContext" || freshness.freshnessStatus === "afterClose"
+        ? "Bevaka"
+        : "Undvik"
+      : repricingPhase === "DEAD" || repricingPhase === "EXHAUSTION"
+        ? "Undvik"
+        : repricingPhase === "REPRICING" && rawAction === "Het men jaga inte"
+          ? candidate.autonomousDiscoveryScore >= 70 && effectiveContinuation >= 75 && risk <= 62
+            ? "Agera"
+            : "Bevaka"
+        : repricingPhase === "CROWDED" && rawAction === "Agera"
+          ? "Het men jaga inte"
+          : signalQuality.signalQuality === "DEAD" || signalQuality.signalQuality === "EXHAUSTED"
+            ? "Undvik"
+            : signalQuality.signalQuality === "STALLED" && rawAction === "Agera"
+              ? "Bevaka"
+              : signalQuality.confirmationCount < 2 && rawAction === "Agera"
+                ? "Bevaka"
+                : rawAction;
   return {
     ticker: candidate.ticker,
     company: candidate.companyName,
@@ -994,7 +1092,7 @@ function toTradingCandidate(
     trigger: triggerFor(candidate, setupType),
     invalidation: invalidationFor(candidate, setupType),
     continuation: effectiveContinuation,
-    risk: riskScore(candidate),
+    risk,
     rvol: candidate.reaction.relativeVolume,
     movePct: candidate.reaction.intradayMomentumPct ?? candidate.reaction.intradayMomentum,
     dayChangePct: candidate.reaction.dayChangePct,
@@ -1015,6 +1113,7 @@ function toTradingCandidate(
     dataAgeMinutes: freshness.dataAgeMinutes,
     isActiveToday: freshness.isActiveToday,
     ...signalQuality,
+    repricingPhase,
     ...narrative,
     discoveryScore,
     triggerVerificationState,
@@ -1066,6 +1165,18 @@ function toPersistedCandidate(snapshot: RunnerCaseSnapshot, change?: string): Tr
           : sourceBucket === "STEALTH"
             ? "Stealth accumulation"
             : "Watch setup";
+  const repricingPhase = classifyRepricingPhase({
+    dayChangePct,
+    intradayMomentumPct: movePct,
+    rvol,
+    continuation,
+    risk: fade,
+    isActiveToday: false,
+    freshnessStatus: "recentMemory",
+    signalQuality: "STALLED",
+    sourceBucket,
+    recentlyActive: Boolean(change),
+  });
   return {
     ticker: snapshot.ticker,
     company: snapshot.ticker,
@@ -1110,6 +1221,7 @@ function toPersistedCandidate(snapshot: RunnerCaseSnapshot, change?: string): Tr
     decayScore: 70,
     staleReason: "persisted memory utan färsk livebekräftelse",
     signalQuality: "STALLED",
+    repricingPhase,
     narrativeTriggerType: "UNKNOWN",
     narrativeStrength: 10,
     narrativeFreshness: 10,
@@ -1157,6 +1269,13 @@ function convictionScore(candidate: TradingCandidate) {
     UNVERIFIED: -4,
     PRICE_ONLY: candidate.rvol >= 2.8 && candidate.continuation >= 75 ? -2 : -14,
   };
+  const phaseBoost: Record<RepricingPhase, number> = {
+    REPRICING: 16,
+    AWAKENING: 8,
+    CROWDED: -10,
+    EXHAUSTION: -24,
+    DEAD: -36,
+  };
   const participation =
     Math.min(20, Math.max(0, candidate.rvol - 1.25) * 12) +
     Math.min(16, Math.max(0, candidate.marketAttentionShift - 45) * 0.22);
@@ -1168,6 +1287,7 @@ function convictionScore(candidate: TradingCandidate) {
       candidate.discoveryScore * 0.22 +
       freshnessBoost +
       qualityBoost[candidate.signalQuality] +
+      phaseBoost[candidate.repricingPhase] +
       verificationBoost[candidate.triggerVerificationState] +
       participation +
       structure -
@@ -1184,6 +1304,7 @@ function isTopSetup(candidate: TradingCandidate) {
     (candidate.triggerVerificationState === "PRICE_ONLY" && candidate.rvol >= 2.8 && candidate.continuation >= 78);
   return candidate.isActiveToday &&
     candidate.action === "Agera" &&
+    candidate.repricingPhase === "REPRICING" &&
     strongSignal &&
     candidate.continuation >= 70 &&
     candidate.rvol >= 1.55 &&
@@ -1198,10 +1319,13 @@ function isTopSetup(candidate: TradingCandidate) {
 function isWatchlistSetup(candidate: TradingCandidate) {
   if (isTopSetup(candidate)) return false;
   if (candidate.action === "Undvik" || candidate.action === "Hog risk") return false;
+  if (candidate.repricingPhase === "DEAD" || candidate.repricingPhase === "EXHAUSTION") return false;
   if (candidate.signalQuality === "DEAD" || candidate.signalQuality === "EXHAUSTED") return false;
   if (candidate.decayScore >= 65) return false;
   if (!candidate.isActiveToday && candidate.freshnessStatus !== "premarketContext" && candidate.freshnessStatus !== "afterClose") return false;
   return candidate.sourceBucket === "STEALTH" ||
+    candidate.repricingPhase === "AWAKENING" ||
+    candidate.repricingPhase === "REPRICING" ||
     candidate.signalQuality === "RECLAIM_SETUP" ||
     candidate.signalQuality === "EARLY_WATCH" ||
     (candidate.continuation >= 58 && candidate.rvol >= 1.25 && candidate.risk < 78);
@@ -1209,6 +1333,8 @@ function isWatchlistSetup(candidate: TradingCandidate) {
 
 function isDeadMoney(candidate: TradingCandidate) {
   return candidate.action === "Undvik" ||
+    candidate.repricingPhase === "DEAD" ||
+    candidate.repricingPhase === "EXHAUSTION" ||
     candidate.signalQuality === "DEAD" ||
     candidate.signalQuality === "EXHAUSTED" ||
     candidate.decayScore >= 70 ||
