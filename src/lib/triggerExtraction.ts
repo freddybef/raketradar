@@ -49,18 +49,18 @@ type TriggerRule = {
 const rules: TriggerRule[] = [
   {
     type: "order",
-    keywords: ["order", "beställning", "ordervärde", "kundorder"],
-    impactScore: 82,
-    confidence: 82,
+    keywords: ["order", "beställning", "ordervärde", "kundorder", "wins order", "receives order", "order worth", "vinner order", "erhåller order"],
+    impactScore: 84,
+    confidence: 84,
     direction: "bullish",
     suggestedAction: "Kontrollera ordervärde, marginal och om ordern är återkommande.",
     decayHours: 48,
   },
   {
     type: "kontrakt",
-    keywords: ["kontrakt", "tecknar kontrakt", "tilldelas kontrakt"],
-    impactScore: 78,
-    confidence: 78,
+    keywords: ["kontrakt", "tecknar kontrakt", "tilldelas kontrakt", "contract", "wins contract", "awarded contract", "signs contract"],
+    impactScore: 80,
+    confidence: 80,
     direction: "bullish",
     suggestedAction: "Verifiera kontraktsstorlek, motpart och leveranstid.",
     decayHours: 72,
@@ -94,7 +94,7 @@ const rules: TriggerRule[] = [
   },
   {
     type: "emission",
-    keywords: ["företrädesemission", "riktad emission", "nyemission", "emissionslikvid"],
+    keywords: ["företrädesemission", "riktad emission", "nyemission", "emissionslikvid", "rights issue", "directed share issue", "share issue"],
     impactScore: 78,
     confidence: 84,
     direction: "bearish",
@@ -103,7 +103,7 @@ const rules: TriggerRule[] = [
   },
   {
     type: "finansiering",
-    keywords: ["finansiering", "lånefacilitet", "kreditfacilitet", "brygglån", "säkrar finansiering"],
+    keywords: ["finansiering", "lånefacilitet", "kreditfacilitet", "brygglån", "säkrar finansiering", "financing", "loan facility", "credit facility"],
     impactScore: 64,
     confidence: 72,
     direction: "neutral",
@@ -112,7 +112,7 @@ const rules: TriggerRule[] = [
   },
   {
     type: "omvänd vinstvarning",
-    keywords: ["omvänd vinstvarning", "höjer prognos", "överträffar förväntan", "starkare än väntat"],
+    keywords: ["omvänd vinstvarning", "höjer prognos", "överträffar förväntan", "starkare än väntat", "raises guidance", "beats expectations", "above expectations"],
     impactScore: 86,
     confidence: 80,
     direction: "bullish",
@@ -121,7 +121,7 @@ const rules: TriggerRule[] = [
   },
   {
     type: "insiderköp",
-    keywords: ["insiderköp", "köper aktier", "insynsperson", "ledande befattningshavare köper"],
+    keywords: ["insiderköp", "köper aktier", "insynsperson", "ledande befattningshavare köper", "insider purchase", "insider buying"],
     impactScore: 72,
     confidence: 82,
     direction: "bullish",
@@ -130,7 +130,7 @@ const rules: TriggerRule[] = [
   },
   {
     type: "bud",
-    keywords: ["offentligt uppköpserbjudande", "lägger bud", "budplikt", "bud på"],
+    keywords: ["offentligt uppköpserbjudande", "lägger bud", "budplikt", "bud på", "public offer", "takeover offer"],
     impactScore: 94,
     confidence: 86,
     direction: "bullish",
@@ -148,7 +148,7 @@ const rules: TriggerRule[] = [
   },
   {
     type: "strategisk översyn",
-    keywords: ["strategisk översyn", "strategiska alternativ", "ser över verksamheten"],
+    keywords: ["strategisk översyn", "strategiska alternativ", "ser över verksamheten", "strategic review", "strategic alternatives"],
     impactScore: 70,
     confidence: 74,
     direction: "neutral",
@@ -157,7 +157,7 @@ const rules: TriggerRule[] = [
   },
   {
     type: "AI/datacenter/försvar/cyber themes",
-    keywords: ["ai", "artificiell intelligens", "datacenter", "försvar", "cyber", "nato"],
+    keywords: ["ai", "artificiell intelligens", "datacenter", "försvar", "cyber", "nato", "defence", "defense", "cybersecurity", "data center", "semiconductor"],
     impactScore: 72,
     confidence: 66,
     direction: "bullish",
@@ -166,7 +166,7 @@ const rules: TriggerRule[] = [
   },
   {
     type: "vd-byte",
-    keywords: ["vd avgår", "ny vd", "byter vd", "verkställande direktör"],
+    keywords: ["vd avgår", "ny vd", "byter vd", "verkställande direktör", "new ceo", "ceo resigns", "appoints ceo"],
     impactScore: 58,
     confidence: 72,
     direction: "neutral",
@@ -175,7 +175,7 @@ const rules: TriggerRule[] = [
   },
   {
     type: "rapport",
-    keywords: ["delårsrapport", "bokslut", "rapport", "ebit", "omsättning"],
+    keywords: ["delårsrapport", "bokslut", "rapport", "ebit", "omsättning", "earnings", "interim report", "quarterly report", "q1", "q2", "q3", "q4", "earnings call"],
     impactScore: 68,
     confidence: 76,
     direction: "neutral",
@@ -184,7 +184,7 @@ const rules: TriggerRule[] = [
   },
   {
     type: "riktkurshöjning",
-    keywords: ["höjer riktkurs", "riktkursen höjs", "upprepar köp"],
+    keywords: ["höjer riktkurs", "riktkursen höjs", "upprepar köp", "raises target price", "target price raised", "reiterates buy"],
     impactScore: 64,
     confidence: 70,
     direction: "bullish",
@@ -193,7 +193,7 @@ const rules: TriggerRule[] = [
   },
   {
     type: "patent",
-    keywords: ["patent", "patentgodkännande", "patent beviljas"],
+    keywords: ["patent", "patentgodkännande", "patent beviljas", "patent granted", "receives patent"],
     impactScore: 58,
     confidence: 70,
     direction: "bullish",
@@ -202,7 +202,7 @@ const rules: TriggerRule[] = [
   },
   {
     type: "studie/resultat",
-    keywords: ["studieresultat", "fas ii", "fas 2", "topline", "klinisk studie", "positiva resultat"],
+    keywords: ["studieresultat", "fas ii", "fas 2", "phase ii", "phase 2", "phase iii", "phase 3", "topline", "klinisk studie", "clinical study", "positiva resultat", "positive results"],
     impactScore: 90,
     confidence: 78,
     direction: "bullish",
@@ -210,8 +210,17 @@ const rules: TriggerRule[] = [
     decayHours: 96,
   },
   {
+    type: "partneravtal",
+    keywords: ["partneravtal", "partnerskap", "samarbetsavtal", "strategic partnership", "partner agreement", "collaboration agreement"],
+    impactScore: 66,
+    confidence: 70,
+    direction: "neutral",
+    suggestedAction: "Kräv kommersiellt värde, exklusivitet eller tydlig intäktsmodell innan chase.",
+    decayHours: 72,
+  },
+  {
     type: "squeeze/momentum",
-    keywords: ["squeeze", "blankning", "momentum", "rusar", "hög volym"],
+    keywords: ["squeeze", "blankning", "momentum", "rusar", "hög volym", "short interest", "unusual volume", "surges"],
     impactScore: 70,
     confidence: 68,
     direction: "bullish",
@@ -220,7 +229,7 @@ const rules: TriggerRule[] = [
   },
   {
     type: "konkurs/varning",
-    keywords: ["konkurs", "rekonstruktion", "vinstvarning", "going concern", "likviditetsbrist"],
+    keywords: ["konkurs", "rekonstruktion", "vinstvarning", "going concern", "likviditetsbrist", "profit warning", "liquidity shortage"],
     impactScore: 92,
     confidence: 88,
     direction: "bearish",
@@ -242,6 +251,34 @@ function evidenceFor(text: string, keyword: string) {
   return normalized.slice(start, end);
 }
 
+function hasMonetaryValue(text: string) {
+  return /\b\d+(?:[.,]\d+)?\s*(msek|mnsek|mkr|sek|meur|eur|musd|usd|million|mn)\b/i.test(text);
+}
+
+function enrichTrigger(trigger: NewsTrigger, rawText: string): NewsTrigger {
+  if (trigger.type === "order") {
+    const valueBoost = hasMonetaryValue(rawText) ? 8 : 0;
+    return {
+      ...trigger,
+      impactScore: Math.min(98, trigger.impactScore + valueBoost),
+      confidence: Math.min(96, trigger.confidence + valueBoost),
+      suggestedAction: hasMonetaryValue(rawText)
+        ? "Ordern har angivet värde. Jämför ordervärde mot omsättning, marginal och orderhistorik innan add/chase."
+        : trigger.suggestedAction,
+    };
+  }
+  if (trigger.type === "rapport" && /\b(invitation to|earnings call|kallelse|presentation|webcast)\b/i.test(rawText)) {
+    return {
+      ...trigger,
+      impactScore: Math.max(35, trigger.impactScore - 20),
+      confidence: Math.max(45, trigger.confidence - 12),
+      direction: "neutral",
+      suggestedAction: "Detta verkar vara rapportkallelse/presentation snarare än själva rapportutfallet. Kräv pris/volymbekräftelse.",
+    };
+  }
+  return trigger;
+}
+
 export function extractTriggers(rawText: string): NewsTrigger[] {
   const normalized = normalize(rawText);
 
@@ -250,7 +287,7 @@ export function extractTriggers(rawText: string): NewsTrigger[] {
       const keyword = rule.keywords.find((item) => normalized.includes(item));
       if (!keyword) return null;
 
-      return {
+      return enrichTrigger({
         type: rule.type,
         impactScore: rule.impactScore,
         confidence: rule.confidence,
@@ -258,7 +295,7 @@ export function extractTriggers(rawText: string): NewsTrigger[] {
         evidence: evidenceFor(rawText, keyword),
         suggestedAction: rule.suggestedAction,
         decayHours: rule.decayHours,
-      };
+      }, rawText);
     })
     .filter((trigger): trigger is NewsTrigger => Boolean(trigger));
 }
