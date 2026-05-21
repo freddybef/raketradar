@@ -917,7 +917,12 @@ function catalystWeight(candidate: AutonomousDiscoveryCandidate, catalyst: { typ
   return Math.max(0, Math.min(100, Math.round(score)));
 }
 
-function thesisFor(candidate: AutonomousDiscoveryCandidate, setupType: string, catalyst: { type: CatalystType; score: number; summary: string }) {
+function thesisFor(
+  candidate: AutonomousDiscoveryCandidate,
+  setupType: string,
+  catalyst: { type: CatalystType; score: number; summary: string },
+  continuation: number,
+) {
   const reaction = candidate.reaction;
   const move = `${round(reaction.intradayMomentum, 2)}%`;
   const rvol = `${round(reaction.relativeVolume, 2)}x RVOL`;
@@ -959,7 +964,7 @@ function thesisFor(candidate: AutonomousDiscoveryCandidate, setupType: string, c
   if (setupType === "Retail chase risk") {
     return `Crowded/oklar kvalitet. Kräver lägre fake-spike-risk.`;
   }
-  return `${setupType}: ${move}, ${rvol}, continuation ${reaction.continuationProbability}%.`;
+  return `${setupType}: ${move}, ${rvol}, continuation ${continuation}%.`;
 }
 
 function whyNowFor(candidate: AutonomousDiscoveryCandidate, setupType: string, catalyst: { type: CatalystType; score: number; summary: string }) {
@@ -982,12 +987,12 @@ function needsNowFor(candidate: AutonomousDiscoveryCandidate, setupType: string)
   return "Håll första pullbacken och fortsätt trycka med volym.";
 }
 
-function prosFor(candidate: AutonomousDiscoveryCandidate) {
+function prosFor(candidate: AutonomousDiscoveryCandidate, continuation: number) {
   const reaction = candidate.reaction;
   return [
     reaction.relativeVolume >= 1.5 ? `RVOL ${round(reaction.relativeVolume, 2)}` : null,
     reaction.intradayMomentum >= 2 ? `${round(reaction.intradayMomentum, 2)}% prisexpansion` : null,
-    reaction.continuationProbability >= 65 && reaction.relativeVolume >= 1.45 ? `${reaction.continuationProbability}% continuation med deltagande` : null,
+    continuation >= 65 && reaction.relativeVolume >= 1.45 ? `${continuation}% continuation med deltagande` : null,
     reaction.marketAggression >= 55 ? "marknaden attackerar aktivt" : null,
     reaction.squeezeProbability >= 70 ? "squeeze-build" : null,
     candidate.bucket === "STEALTH" ? "tidig/stealth-volym" : null,
@@ -1115,6 +1120,62 @@ function discoveryScoreFor(input: {
   )));
 }
 
+function normalizeContinuation(
+  candidate: AutonomousDiscoveryCandidate,
+  rawContinuation: number,
+  context: {
+    freshness: ReturnType<typeof candidateFreshness>;
+    confirmationCount: number;
+    triggerVerificationState: TriggerVerificationState;
+    narrativeTriggerType: NarrativeTriggerType;
+    catalystType: CatalystType;
+    repricingPhase: RepricingPhase;
+    risk: number;
+    catalystBoostApplied: boolean;
+  },
+) {
+  const verifiedOrThematic =
+    context.triggerVerificationState === "VERIFIED" ||
+    context.triggerVerificationState === "THEMATIC" ||
+    context.catalystBoostApplied;
+  const eliteContinuation =
+    verifiedOrThematic &&
+    context.freshness.isActiveToday &&
+    context.confirmationCount >= 4 &&
+    candidate.reaction.relativeVolume >= 2 &&
+    candidate.reaction.activeTraderAttention >= 60 &&
+    context.risk < 45;
+  let cap = eliteContinuation ? 100 : 92;
+
+  if (
+    context.repricingPhase === "REPRICING" &&
+    verifiedOrThematic &&
+    context.confirmationCount >= 3 &&
+    candidate.reaction.relativeVolume >= 1.55 &&
+    context.risk < 65
+  ) {
+    cap = Math.min(cap, 92);
+  } else {
+    cap = Math.min(cap, 88);
+  }
+
+  if (context.triggerVerificationState === "PRICE_ONLY" && context.narrativeTriggerType === "UNKNOWN") cap = Math.min(cap, 72);
+  if (context.catalystType === "short_squeeze" && !verifiedOrThematic) cap = Math.min(cap, 76);
+  if (context.confirmationCount < 3) cap = Math.min(cap, 74);
+  if (candidate.reaction.activeTraderAttention < 48) cap = Math.min(cap, 76);
+  if (candidate.reaction.relativeVolume < 1.55) cap = Math.min(cap, 70);
+  if ((candidate.bucket === "PARABOLIC_WATCH" || candidate.bucket === "RISK") && !verifiedOrThematic) cap = Math.min(cap, 68);
+  if (!context.freshness.isActiveToday && context.freshness.freshnessStatus !== "premarketContext" && context.freshness.freshnessStatus !== "afterClose") {
+    cap = Math.min(cap, 62);
+  }
+  if (context.repricingPhase === "EXHAUSTION") cap = Math.min(cap, 58);
+  if (context.repricingPhase === "DEAD") cap = Math.min(cap, 45);
+  if (context.risk >= 75) cap = Math.min(cap, 68);
+  else if (context.risk >= 65) cap = Math.min(cap, 76);
+
+  return Math.max(0, Math.min(100, Math.round(Math.min(rawContinuation, cap))));
+}
+
 function toTradingCandidate(
   candidate: AutonomousDiscoveryCandidate,
   change: string | undefined,
@@ -1156,12 +1217,36 @@ function toTradingCandidate(
       : candidate.reaction.relativeVolume < 1.35 || candidate.reaction.activeTraderAttention < 35 || candidate.reaction.marketAggression < 35
         ? Math.min(candidate.reaction.continuationProbability, 58)
         : candidate.reaction.continuationProbability;
-  const effectiveContinuation = Math.min(100, rawContinuation + (catalystBoostApplied ? 8 : 0));
+  const boostedContinuation = Math.min(100, rawContinuation + (catalystBoostApplied ? 8 : 0));
+  const provisionalRepricingPhase = classifyRepricingPhase({
+    dayChangePct: candidate.reaction.dayChangePct,
+    intradayMomentumPct: candidate.reaction.intradayMomentumPct ?? candidate.reaction.intradayMomentum,
+    rvol: candidate.reaction.relativeVolume,
+    continuation: boostedContinuation,
+    risk,
+    isActiveToday: freshness.isActiveToday,
+    freshnessStatus: freshness.freshnessStatus,
+    signalQuality: signalQuality.signalQuality,
+    hasFreshFundamentalCatalyst: narrative.hasFreshFundamentalCatalyst,
+    triggerVerificationState,
+    sourceBucket: candidate.bucket,
+    recentlyActive: Boolean(change),
+  });
+  const normalizedContinuation = normalizeContinuation(candidate, boostedContinuation, {
+    freshness,
+    confirmationCount: signalQuality.confirmationCount,
+    triggerVerificationState,
+    narrativeTriggerType: narrative.narrativeTriggerType,
+    catalystType: catalyst.type,
+    repricingPhase: provisionalRepricingPhase,
+    risk,
+    catalystBoostApplied,
+  });
   const repricingPhase = classifyRepricingPhase({
     dayChangePct: candidate.reaction.dayChangePct,
     intradayMomentumPct: candidate.reaction.intradayMomentumPct ?? candidate.reaction.intradayMomentum,
     rvol: candidate.reaction.relativeVolume,
-    continuation: effectiveContinuation,
+    continuation: normalizedContinuation,
     risk,
     isActiveToday: freshness.isActiveToday,
     freshnessStatus: freshness.freshnessStatus,
@@ -1179,7 +1264,7 @@ function toTradingCandidate(
       : repricingPhase === "DEAD" || repricingPhase === "EXHAUSTION"
         ? "Undvik"
         : repricingPhase === "REPRICING" && rawAction === "Het men jaga inte"
-          ? candidate.autonomousDiscoveryScore >= 70 && effectiveContinuation >= 75 && risk <= 62
+          ? candidate.autonomousDiscoveryScore >= 70 && normalizedContinuation >= 75 && risk <= 62
             ? "Agera"
             : "Bevaka"
         : repricingPhase === "CROWDED" && rawAction === "Agera"
@@ -1206,15 +1291,15 @@ function toTradingCandidate(
     action,
     setupType,
     thesis: newsTrigger
-      ? `${newsTrigger.triggerType}: ${newsTrigger.summary} ${thesisFor(candidate, setupType, { ...catalyst, score: catalystScore })}`
+      ? `${newsTrigger.triggerType}: ${newsTrigger.summary} ${thesisFor(candidate, setupType, { ...catalyst, score: catalystScore }, normalizedContinuation)}`
       : narrative.narrativeTriggerType !== "UNKNOWN" && narrative.narrativeStrength >= 55
-      ? `${narrative.narrativeTriggerType.replaceAll("_", " ").toLowerCase()}: ${thesisFor(candidate, setupType, { ...catalyst, score: catalystScore })}`
-      : thesisFor(candidate, setupType, { ...catalyst, score: catalystScore }),
-    pros: prosFor(candidate),
+      ? `${narrative.narrativeTriggerType.replaceAll("_", " ").toLowerCase()}: ${thesisFor(candidate, setupType, { ...catalyst, score: catalystScore }, normalizedContinuation)}`
+      : thesisFor(candidate, setupType, { ...catalyst, score: catalystScore }, normalizedContinuation),
+    pros: prosFor(candidate, normalizedContinuation),
     cons: consFor(candidate),
     trigger: triggerFor(candidate, setupType),
     invalidation: invalidationFor(candidate, setupType),
-    continuation: effectiveContinuation,
+    continuation: normalizedContinuation,
     risk,
     rvol: candidate.reaction.relativeVolume,
     movePct: candidate.reaction.intradayMomentumPct ?? candidate.reaction.intradayMomentum,
