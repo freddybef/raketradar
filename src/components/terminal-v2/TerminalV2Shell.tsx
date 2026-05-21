@@ -1175,7 +1175,14 @@ const afterCloseWatchSetups = snapshot
         ...snapshot.breadth.noChase,
         ...snapshot.breadth.recentlyActive,
         ...snapshot.candidates.filter(isIgnoreSetup),
-      ]).slice(0, 8)
+   ])
+  .filter(
+    (candidate) =>
+      !afterCloseWatchSetups.some(
+        (afterClose) => afterClose.ticker === candidate.ticker,
+      ),
+  )
+  .slice(0, 8)
     : [];
   const tieredTickers = new Set([...topSetups, ...watchlistSetups, ...ignoreSetups].map((candidate) => candidate.ticker.toUpperCase()));
   const secondaryActiveItems = snapshot?.candidates
