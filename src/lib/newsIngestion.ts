@@ -120,11 +120,20 @@ export const manualMockNewsProvider: NewsProvider = {
   },
 };
 
-function rssFeedUrls() {
-  return (process.env.NEWS_RSS_FEEDS ?? "")
-    .split(",")
+function splitFeedEnv(value?: string) {
+  return (value ?? "")
+    .split(/[\n,;]+/)
     .map((url) => url.trim())
     .filter(Boolean);
+}
+
+function rssFeedUrls() {
+  return [...new Set([
+    ...splitFeedEnv(process.env.NEWS_RSS_FEEDS),
+    ...splitFeedEnv(process.env.NEWS_FEED_URLS),
+    ...splitFeedEnv(process.env.NEWS_FEED_URL),
+    ...splitFeedEnv(process.env.RAKETRADAR_NEWS_RSS_FEEDS),
+  ])];
 }
 
 function decodeXml(value: string) {
@@ -492,7 +501,7 @@ export async function fetchLatestNewsHeadlinesWithFallback(): Promise<NewsIngest
     isLive: false,
     isConfigured: false,
     lastFetchAt: nowIso(),
-    error: result.error ? `RSS failed/empty: ${result.error}` : "News provider not configured: NEWS_RSS_FEEDS is missing",
+    error: result.error ? `RSS failed/empty: ${result.error}` : "News provider not configured: NEWS_RSS_FEEDS/NEWS_FEED_URLS/NEWS_FEED_URL is missing",
     headlineCount: 0,
     feedHealth: result.feedHealth,
     generatedAt: nowIso(),
