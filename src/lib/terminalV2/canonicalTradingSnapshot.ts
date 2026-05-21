@@ -44,6 +44,7 @@ export interface TradingCandidate {
   confidence: number;
   source: string;
   sourceBucket: DiscoveryBucket;
+  finalState: DiscoveryBucket;
   changed?: string | null;
   asOf?: string;
   personality: string;
@@ -74,6 +75,9 @@ export interface TradingCandidate {
   hasFreshFundamentalCatalyst: boolean;
   discoveryScore: number;
   triggerVerificationState: TriggerVerificationState;
+  newsTriggerType: string | null;
+  newsAgeHours: number | null;
+  catalystBoostApplied: boolean;
 }
 
 export type CatalystType =
@@ -81,6 +85,11 @@ export type CatalystType =
   | "insider_accumulation"
   | "news_expansion"
   | "contract_award"
+  | "regulatory_catalyst"
+  | "study_result"
+  | "bid_event"
+  | "financing"
+  | "guidance_change"
   | "sector_sympathy"
   | "retail_momentum"
   | "short_squeeze"
@@ -287,6 +296,14 @@ export interface CanonicalTradingSnapshot {
   positionManagement: PositionManagementDecision[];
   priorityBoard: PriorityItem[];
   newsTriggers: NewsTrigger[];
+  catalystRankingDebug: Array<{
+    ticker: string;
+    triggerType: string | null;
+    verified: boolean;
+    newsAgeHours: number | null;
+    catalystBoostApplied: boolean;
+    finalState: DiscoveryBucket;
+  }>;
   earlyRadar: EarlyRadarItem[];
   breadth: {
     hot: TradingCandidate[];
@@ -309,6 +326,53 @@ function round(value: number, decimals = 0) {
 
 function tickerKey(ticker: string) {
   return ticker.trim().toUpperCase();
+}
+
+function newsAgeHours(publishedAt: string, now = new Date()) {
+  const date = new Date(publishedAt);
+  if (Number.isNaN(date.getTime())) return null;
+  return Math.max(0, (now.getTime() - date.getTime()) / 3_600_000);
+}
+
+function isActionableCatalystType(triggerType: string) {
+  return [
+    "ORDER_CONTRACT",
+    "FDA",
+    "STUDY_RESULT",
+    "BID",
+    "EMISSION",
+    "FINANCING",
+    "FUNDING",
+    "GUIDANCE",
+    "PROFIT_WARNING",
+    "REGULATORY",
+  ].includes(triggerType);
+}
+
+function hasHighConfidenceNewsMatch(candidate: AutonomousDiscoveryCandidate, trigger: NewsTrigger) {
+  if (!trigger.ticker || tickerKey(trigger.ticker) !== tickerKey(candidate.ticker)) return false;
+  const headline = trigger.headline.toLowerCase();
+  const company = (trigger.company ?? candidate.companyName).toLowerCase();
+  const companyStem = company
+    .replace(/\bab\b/g, "")
+    .replace(/\bgroup\b/g, "")
+    .replace(/\bholding\b/g, "")
+    .replace(/\(publ\)/g, "")
+    .split(/\s+/)
+    .find((part) => part.length >= 4);
+  const tickerStem = tickerKey(candidate.ticker).replace(/\s[AB]$/, "").toLowerCase();
+  return headline.includes(tickerStem) || (companyStem ? headline.includes(companyStem) : Boolean(trigger.company));
+}
+
+function hasActionableVerifiedCatalyst(candidate: AutonomousDiscoveryCandidate, trigger?: NewsTrigger) {
+  if (!trigger) return false;
+  const age = newsAgeHours(trigger.publishedAt);
+  return trigger.triggerVerificationState === "VERIFIED" &&
+    trigger.isFreshToday &&
+    age !== null &&
+    age < 6 &&
+    isActionableCatalystType(trigger.triggerType) &&
+    hasHighConfidenceNewsMatch(candidate, trigger);
 }
 
 function stockholmParts(date: Date) {
@@ -492,10 +556,7 @@ export function classifyRepricingPhase(input: RepricingPhaseInput): RepricingPha
   const move = Math.max(input.dayChangePct, input.intradayMomentumPct);
   const hasSessionContext =
     input.isActiveToday || input.freshnessStatus === "premarketContext" || input.freshnessStatus === "afterClose";
-  const verifiedOrNarrative =
-    input.hasFreshFundamentalCatalyst ||
-    input.triggerVerificationState === "VERIFIED" ||
-    input.triggerVerificationState === "THEMATIC";
+  const verifiedOrNarrative = input.hasFreshFundamentalCatalyst || input.triggerVerificationState === "THEMATIC";
   const constructiveSignal =
     input.signalQuality === "FRESH_IGNITION" ||
     input.signalQuality === "ACTIVE_CONTINUATION" ||
@@ -572,7 +633,20 @@ function actionFor(candidate: AutonomousDiscoveryCandidate): TradingAction {
   return "Bevaka";
 }
 
-function setupTypeFor(candidate: AutonomousDiscoveryCandidate) {
+function catalystSetupType(trigger: NewsTrigger) {
+  const triggerType = trigger.triggerType as string;
+  if (triggerType === "ORDER_CONTRACT") return "Nytt kontrakt";
+  if (triggerType === "FDA" || triggerType === "REGULATORY") return "Regulatorisk trigger";
+  if (triggerType === "STUDY_RESULT") return "Studieresultat";
+  if (triggerType === "BID") return "Bud/M&A";
+  if (triggerType === "EMISSION" || triggerType === "FINANCING" || triggerType === "FUNDING") return "Finansiering";
+  if (triggerType === "GUIDANCE") return "Guidance";
+  if (triggerType === "PROFIT_WARNING") return "Vinstvarning";
+  return "Verifierad catalyst";
+}
+
+function setupTypeFor(candidate: AutonomousDiscoveryCandidate, newsTrigger?: NewsTrigger) {
+  if (newsTrigger && hasActionableVerifiedCatalyst(candidate, newsTrigger)) return catalystSetupType(newsTrigger);
   const label = candidate.reaction.label;
   if (candidate.bucket === "PARABOLIC_WATCH" || label === "PARABOLIC_RISK") return "Parabolic re-entry";
   if (label === "EARLY_MOMENTUM") return "Early momentum";
@@ -599,6 +673,14 @@ function personalityFor(setupType: string) {
     "Weak bounce": "Svag studs",
     "Momentum leader": "Momentum-ledare",
     "Watch setup": "Bevakningscase",
+    "Nytt kontrakt": "ORDER_CONTRACT",
+    "Regulatorisk trigger": "FDA/regulatorisk",
+    Studieresultat: "Studieresultat",
+    "Bud/M&A": "Bud/M&A",
+    Finansiering: "Finansiering",
+    Guidance: "Guidance",
+    Vinstvarning: "Vinstvarning",
+    "Verifierad catalyst": "Verifierad catalyst",
   };
   return personalities[setupType] ?? setupType;
 }
@@ -611,7 +693,31 @@ function entityNarrativeText(candidate: AutonomousDiscoveryCandidate) {
   return `${candidate.ticker} ${candidate.companyName} ${candidate.sector}`.toLowerCase();
 }
 
-function classifyCatalyst(candidate: AutonomousDiscoveryCandidate): { type: CatalystType; score: number; summary: string } {
+function classifyCatalyst(candidate: AutonomousDiscoveryCandidate, newsTrigger?: NewsTrigger): { type: CatalystType; score: number; summary: string } {
+  if (newsTrigger && hasActionableVerifiedCatalyst(candidate, newsTrigger)) {
+    const triggerType = newsTrigger.triggerType as string;
+    if (triggerType === "ORDER_CONTRACT") {
+      return { type: "contract_award", score: 88, summary: "Verifierad order/kontrakt-trigger: konkret intakts- eller valideringsrepricing." };
+    }
+    if (triggerType === "FDA" || triggerType === "REGULATORY") {
+      return { type: "regulatory_catalyst", score: 86, summary: "Verifierad regulatorisk catalyst som kan flytta sannolikhetsbilden." };
+    }
+    if (triggerType === "STUDY_RESULT") {
+      return { type: "study_result", score: 86, summary: "Verifierat studieresultat: binar men fundamental repricing-trigger." };
+    }
+    if (triggerType === "BID") {
+      return { type: "bid_event", score: 90, summary: "Verifierad bud-/M&A-trigger. Ny prisankare styr mer an sektorflode." };
+    }
+    if (triggerType === "EMISSION" || triggerType === "FINANCING" || triggerType === "FUNDING") {
+      return { type: "financing", score: 72, summary: "Verifierad finansiering/emission. Kan minska overlevnadsrisk men kraver riskkontroll." };
+    }
+    if (triggerType === "GUIDANCE") {
+      return { type: "guidance_change", score: 84, summary: "Verifierad guidanceforandring som kan tvinga omvardering." };
+    }
+    if (triggerType === "PROFIT_WARNING") {
+      return { type: "guidance_change", score: 68, summary: "Verifierad vinstvarning: stor repricing mojlig men riskprofilen ar hog." };
+    }
+  }
   const entityText = entityNarrativeText(candidate);
   const flowText = [
     ...candidate.labels,
@@ -691,6 +797,7 @@ function classifyNarrativeTrigger(
   hasFreshFundamentalCatalyst: boolean;
 } {
   if (newsTrigger) {
+    const actionableVerifiedCatalyst = hasActionableVerifiedCatalyst(candidate, newsTrigger);
     return {
       narrativeTriggerType: newsTrigger.narrativeTriggerType as NarrativeTriggerType,
       narrativeStrength: Math.max(35, Math.min(100, Math.round(newsTrigger.triggerStrength * 0.45 + newsTrigger.repricingPotential * 0.45 + (newsTrigger.isFreshToday ? 8 : -12)))),
@@ -698,7 +805,7 @@ function classifyNarrativeTrigger(
       thematicTailwind: Math.max(20, newsTrigger.secondDerivativeScore),
       repricingProbability: newsTrigger.repricingPotential,
       marketAttentionShift: Math.max(35, Math.round(candidate.reaction.activeTraderAttention * 0.55 + newsTrigger.triggerStrength * 0.25)),
-      hasFreshFundamentalCatalyst: newsTrigger.isFreshToday && newsTrigger.narrativeTriggerType !== "UNKNOWN" && newsTrigger.triggerType !== "MACRO_NOISE",
+      hasFreshFundamentalCatalyst: actionableVerifiedCatalyst,
     };
   }
   const flowText = narrativeText(candidate);
@@ -818,6 +925,11 @@ function thesisFor(candidate: AutonomousDiscoveryCandidate, setupType: string, c
   if (catalyst.type === "earnings_breakout") return `Rapport/repricing: ${move}, ${rvol}. Kräver fortsatt participation.`;
   if (catalyst.type === "insider_accumulation") return `Insiderstöd + live test. Behöver volymbekräftelse.`;
   if (catalyst.type === "contract_award") return `Order/avtal: bevaka om köpare betalar upp efter första vågen.`;
+  if (catalyst.type === "regulatory_catalyst") return `Regulatorisk trigger: ${move}, ${rvol}. Repricing galler fore sektorflode.`;
+  if (catalyst.type === "study_result") return `Studieresultat: fundamental trigger med binar risk. Bekrafta struktur.`;
+  if (catalyst.type === "bid_event") return `Bud/M&A: ny prisankare. Likviditet och spread styr execution.`;
+  if (catalyst.type === "financing") return `Finansiering/emission: riskbilden reprisas, men utspadning maste respekteras.`;
+  if (catalyst.type === "guidance_change") return `Guidance/vinstvarning: verifierad omvardering, inte sektorflode.`;
   if (catalyst.type === "biotech_binary") return `Binärt case: optionalitet hög, fade-risk styr.`;
   if (catalyst.type === "short_squeeze") return `Squeezeprofil: ${move}, ${rvol}. Nästa volymvåg avgör.`;
   if (catalyst.type === "retail_momentum") return `Crowded momentum. Re-entry före chase.`;
@@ -947,8 +1059,8 @@ function discoveryScoreFor(input: {
 }) {
   const { candidate, freshness, narrative, signalQuality, triggerVerificationState, hasLiveNewsTrigger } = input;
   const verificationBoost: Record<TriggerVerificationState, number> = {
-    VERIFIED: 22,
-    THEMATIC: 12,
+    VERIFIED: hasLiveNewsTrigger ? 22 : 4,
+    THEMATIC: 6,
     UNVERIFIED: 3,
     PRICE_ONLY: candidate.reaction.relativeVolume >= 3 ? 0 : -16,
   };
@@ -1011,11 +1123,13 @@ function toTradingCandidate(
 ): TradingCandidate | null {
   if (candidate.ticker.toUpperCase() === "BIOX") return null;
   if (candidate.bucket === "SUPPRESSED" && candidate.autonomousDiscoveryScore < 45) return null;
-  const setupType = setupTypeFor(candidate);
-  const catalyst = classifyCatalyst(candidate);
-  const catalystScore = catalystWeight(candidate, catalyst);
   const freshness = candidateFreshness(candidate.reaction.asOf, snapshotFreshness);
   const newsTrigger = newsByTicker.get(candidate.ticker.toUpperCase());
+  const catalystBoostApplied = hasActionableVerifiedCatalyst(candidate, newsTrigger);
+  const triggerAgeHours = newsTrigger ? newsAgeHours(newsTrigger.publishedAt) : null;
+  const setupType = setupTypeFor(candidate, catalystBoostApplied ? newsTrigger : undefined);
+  const catalyst = classifyCatalyst(candidate, catalystBoostApplied ? newsTrigger : undefined);
+  const catalystScore = catalystWeight(candidate, catalyst);
   const narrative = classifyNarrativeTrigger(candidate, { ...catalyst, score: catalystScore }, freshness, newsTrigger);
   const signalQuality = assessSignalQuality({ candidate, freshness, catalystScore });
   const triggerVerificationState = verificationForCandidate(candidate, narrative, newsTrigger);
@@ -1025,23 +1139,24 @@ function toTradingCandidate(
     narrative,
     signalQuality,
     triggerVerificationState,
-    hasLiveNewsTrigger: Boolean(newsTrigger?.isFreshToday),
+    hasLiveNewsTrigger: catalystBoostApplied,
   });
   const risk = riskScore(candidate);
   const rawAction = actionFor(candidate);
   const narrativeBoost =
-    narrative.hasFreshFundamentalCatalyst && freshness.isActiveToday
+    catalystBoostApplied && freshness.isActiveToday
       ? Math.round(narrative.narrativeStrength * 0.12 + narrative.repricingProbability * 0.08)
       : narrative.narrativeTriggerType !== "UNKNOWN" && freshness.freshnessStatus === "premarketContext"
         ? Math.round(narrative.narrativeStrength * 0.08)
         : 0;
   const priceOnlyPenalty = triggerVerificationState === "PRICE_ONLY" && candidate.reaction.relativeVolume < 2.4 ? 10 : 0;
-  const effectiveContinuation =
+  const rawContinuation =
     candidate.reaction.relativeVolume < 1.15
       ? Math.min(candidate.reaction.continuationProbability, 45)
       : candidate.reaction.relativeVolume < 1.35 || candidate.reaction.activeTraderAttention < 35 || candidate.reaction.marketAggression < 35
         ? Math.min(candidate.reaction.continuationProbability, 58)
         : candidate.reaction.continuationProbability;
+  const effectiveContinuation = Math.min(100, rawContinuation + (catalystBoostApplied ? 8 : 0));
   const repricingPhase = classifyRepricingPhase({
     dayChangePct: candidate.reaction.dayChangePct,
     intradayMomentumPct: candidate.reaction.intradayMomentumPct ?? candidate.reaction.intradayMomentum,
@@ -1076,6 +1191,14 @@ function toTradingCandidate(
               : signalQuality.confirmationCount < 2 && rawAction === "Agera"
                 ? "Bevaka"
                 : rawAction;
+  const finalState: DiscoveryBucket =
+    freshness.freshnessStatus === "afterClose" &&
+    !catalystBoostApplied &&
+    triggerVerificationState === "PRICE_ONLY" &&
+    candidate.bucket === "HOT"
+      ? "WATCH"
+      : candidate.bucket;
+  const catalystStateBoost = catalystBoostApplied ? 10 : 0;
   return {
     ticker: candidate.ticker,
     company: candidate.companyName,
@@ -1097,10 +1220,11 @@ function toTradingCandidate(
     movePct: candidate.reaction.intradayMomentumPct ?? candidate.reaction.intradayMomentum,
     dayChangePct: candidate.reaction.dayChangePct,
     intradayMomentumPct: candidate.reaction.intradayMomentumPct ?? candidate.reaction.intradayMomentum,
-    score: Math.max(0, Math.min(100, Math.max(candidate.autonomousDiscoveryScore + narrativeBoost, discoveryScore) - priceOnlyPenalty)),
+    score: Math.max(0, Math.min(100, Math.max(candidate.autonomousDiscoveryScore + narrativeBoost + catalystStateBoost, discoveryScore) - priceOnlyPenalty)),
     confidence: candidate.discoveryConfidence,
     source: candidateSource(candidate),
-    sourceBucket: candidate.bucket,
+    sourceBucket: finalState,
+    finalState,
     changed: change ?? null,
     asOf: candidate.reaction.asOf,
     personality: personalityFor(setupType),
@@ -1117,6 +1241,9 @@ function toTradingCandidate(
     ...narrative,
     discoveryScore,
     triggerVerificationState,
+    newsTriggerType: newsTrigger?.triggerType ?? null,
+    newsAgeHours: triggerAgeHours === null ? null : round(triggerAgeHours, 2),
+    catalystBoostApplied,
   };
 }
 
@@ -1202,6 +1329,7 @@ function toPersistedCandidate(snapshot: RunnerCaseSnapshot, change?: string): Tr
     confidence: snapshot.confidence,
     source: `Persisted case-state / ${sourceBucket}`,
     sourceBucket,
+    finalState: sourceBucket,
     changed: change ?? null,
     personality: personalityFor(setupType),
     whyNow: "Momentumet var nyligen på tavlan, men senaste livebekräftelsen är svagare. Behandla som re-check, inte som blankt köp-case.",
@@ -1231,6 +1359,9 @@ function toPersistedCandidate(snapshot: RunnerCaseSnapshot, change?: string): Tr
     hasFreshFundamentalCatalyst: false,
     discoveryScore: Math.max(0, Math.min(45, Math.round(snapshot.score * 0.45))),
     triggerVerificationState: "PRICE_ONLY",
+    newsTriggerType: null,
+    newsAgeHours: null,
+    catalystBoostApplied: false,
   };
 }
 
@@ -1264,8 +1395,8 @@ function convictionScore(candidate: TradingCandidate) {
     DEAD: -42,
   };
   const verificationBoost: Record<TriggerVerificationState, number> = {
-    VERIFIED: 16,
-    THEMATIC: 7,
+    VERIFIED: candidate.catalystBoostApplied ? 16 : 2,
+    THEMATIC: 4,
     UNVERIFIED: -4,
     PRICE_ONLY: candidate.rvol >= 2.8 && candidate.continuation >= 75 ? -2 : -14,
   };
@@ -2218,6 +2349,16 @@ export async function buildCanonicalTradingSnapshot(): Promise<CanonicalTradingS
     snapshotFreshness,
     newsIsLive: safeNewsIngestion.isLive,
   });
+  const catalystRankingDebug = candidates
+    .filter((candidate) => candidate.newsTriggerType || candidate.catalystBoostApplied || candidate.triggerVerificationState !== "PRICE_ONLY")
+    .map((candidate) => ({
+      ticker: candidate.ticker,
+      triggerType: candidate.newsTriggerType,
+      verified: candidate.triggerVerificationState === "VERIFIED",
+      newsAgeHours: candidate.newsAgeHours,
+      catalystBoostApplied: candidate.catalystBoostApplied,
+      finalState: candidate.finalState,
+    }));
 
   return {
     timestamp: snapshotFreshness.generatedAt,
@@ -2265,6 +2406,7 @@ export async function buildCanonicalTradingSnapshot(): Promise<CanonicalTradingS
     positionManagement,
     priorityBoard,
     newsTriggers,
+    catalystRankingDebug,
     earlyRadar,
     breadth,
   };
