@@ -136,12 +136,20 @@ function isGenericMarketHeadline(text: string) {
 function isCompanySpecificOrderHeadline(text: string) {
   const hasOrderAction =
     /\b(wins?|receives?|lands?|secures?|awarded|signs?)\s+(?:an?\s+)?(?:order|contract|agreement)\b/.test(text) ||
-    /\b(vinner|erhåller|erhaller|får|far|tecknar|ingår|ingar|tilldelas)\s+(?:en\s+|ett\s+)?(?:order|kontrakt|avtal|ramavtal|kundorder)\b/.test(text);
+    /\b(vinner|erhåller|erhaller|får|far|tecknar|ingår|ingar|tilldelas)\s+(?:en\s+|ett\s+)?(?:order|kontrakt|avtal|ramavtal|kundorder|miljonavtal)\b/.test(text);
   const hasFramework = /\bramavtal|framework agreement|avropsavtal\b/.test(text);
-  const hasValue = /\b\d+(?:[,.]\d+)?\s*(?:msek|mkr|sek|mnkr|miljoner|million|meur|keur|eur|usd)\b/.test(text);
-  const hasNamedCounterparty = /\b(?:från|fran|med|till|for|from|with)\s+[a-zåäö0-9][a-zåäö0-9&.\- ]{2,}\b/.test(text);
+  const hasValue = /\b(?:\d+(?:[,.]\d+)?\s*(?:msek|mkr|sek|mnkr|miljoner|million|meur|keur|eur|usd)|miljonavtal)\b/.test(text);
+  const hasNamedCounterparty = /\b(?:från|fran|med|till|för|for|from|with)\s+[a-zåäö0-9][a-zåäö0-9&.\- ]{2,}\b/.test(text);
   const hasCustomerWord = /\bkund|customer|motpart|counterparty|beställning|bestallning\b/.test(text);
   return (hasOrderAction || hasFramework) && (hasValue || hasNamedCounterparty || hasCustomerWord || hasFramework);
+}
+
+function secondaryThemeTags(text: string) {
+  const tags: string[] = [];
+  if (/obesitas|glp-?1|novo|lilly|eli lilly|wegovy|ozempic|fetma/.test(text)) tags.push("obesity", "global theme");
+  if (/försvar|defense|nato|drön|drone|cyber|säkerhet/.test(text)) tags.push("defense", "security");
+  if (/datacenter|data center|ai infra|kraft|power|server|cooling|semiconductor|chip/.test(text)) tags.push("datacenter", "ai infrastructure");
+  return tags;
 }
 
 function normalizeTicker(value: string) {
@@ -245,13 +253,13 @@ function classifyTrigger(headline: string): {
     };
   }
   if (isCompanySpecificOrderHeadline(text)) {
-    tags.push("order", "revenue");
+    tags.push("order", "revenue", ...secondaryThemeTags(text));
     return {
       triggerType: "ORDER_CONTRACT",
       narrativeTriggerType: "NEW_CONTRACT",
       thematicTags: tags,
       baseStrength: 78,
-      secondDerivativeScore: 45,
+      secondDerivativeScore: tags.length > 2 ? 64 : 45,
       summary: "Order/kontrakt kan ge konkret intäkts- eller valideringsrepricing.",
     };
   }
