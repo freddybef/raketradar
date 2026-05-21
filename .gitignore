@@ -29,6 +29,15 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+next-*.err.log
+next-*.out.log
+
+# Codex workflow scratch/recovery artifacts
+.codex-push-fix/
+*.stage.tmp
+base-tree.txt
+new-tree.txt
+focus-pass.index
 
 # env files (can opt-in for committing if needed)
 .env*
