@@ -1144,6 +1144,23 @@ export function TerminalV2Shell() {
   const breadthItems = snapshot?.breadth[breadthTab] ?? [];
   const topSetups = snapshot?.topFocus.slice(0, 3) ?? [];
   const topSetupTickers = new Set(topSetups.map((candidate) => candidate.ticker.toUpperCase()));
+
+const afterCloseWatchSetups = snapshot
+  ? uniqCandidates(
+      snapshot.candidates.filter((candidate) =>
+        candidate.freshnessStatus === "afterClose" &&
+        candidate.continuation >= 70 &&
+        candidate.rvol >= 2 &&
+        candidate.risk < 70 &&
+        candidate.signalQuality !== "DEAD" &&
+        candidate.signalQuality !== "EXHAUSTED"
+      ),
+    ).slice(0, 6)
+  : [];
+
+
+
+
   const watchlistSetups = snapshot
     ? uniqCandidates([
         ...snapshot.breadth.watch,
@@ -1319,6 +1336,29 @@ export function TerminalV2Shell() {
 
             <div>
               <div className="mb-2 flex items-center justify-between gap-3">
+<div>
+  <div className="mb-2 flex items-center justify-between gap-3">
+    <h3 className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-300">After-close Watch</h3>
+    <span className="text-xs text-zinc-600">starka stängningscase · bevaka nästa öppning, inte chase</span>
+  </div>
+
+  {afterCloseWatchSetups.length > 0 ? (
+    <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+      {afterCloseWatchSetups.map((candidate) => (
+        <MiniCase
+          key={`after-close-watch-${candidate.ticker}`}
+          candidate={candidate}
+          onOpen={openDetailForItem}
+        />
+      ))}
+    </div>
+  ) : (
+    <p className="text-sm text-zinc-500">
+      Inga starka after-close watch-case just nu.
+    </p>
+  )}
+</div>
+
                 <h3 className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">Watchlist</h3>
                 <span className="text-xs text-zinc-600">intressant men ofullständigt</span>
               </div>
@@ -1448,7 +1488,7 @@ export function TerminalV2Shell() {
                           : "border-rose-800 bg-rose-950/20 text-rose-200"
                   }`}
                 >
-                  {feed.source}: {feed.health} · {feed.headlineCount} hits{feed.statusCode ? ` · ${feed.statusCode}` : ""}
+                {feed.source}: {feed.health} · {feed.headlineCount} hits{feed.statusCode ? ` · ${feed.statusCode}` : ""}{feed.error ? ` · ${feed.error}` : ""}
                 </span>
               ))}
             </div>
