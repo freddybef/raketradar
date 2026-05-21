@@ -389,6 +389,21 @@ function parseFeed(text: string, sourceUrl: string, contentType: string) {
   return parseRssOrAtom(trimmed, sourceUrl);
 }
 
+function rawFeedItemCount(text: string, contentType: string) {
+  const trimmed = text.trim();
+  const looksJson = contentType.includes("json") || trimmed.startsWith("{") || trimmed.startsWith("[");
+  if (looksJson) {
+    try {
+      return jsonItems(JSON.parse(trimmed) as unknown).length;
+    } catch {
+      return 0;
+    }
+  }
+  const rssItems = [...trimmed.matchAll(/<item\b[\s\S]*?<\/item>/gi)].length;
+  const atomItems = [...trimmed.matchAll(/<entry\b[\s\S]*?<\/entry>/gi)].length;
+  return rssItems + atomItems;
+}
+
 function feedFormatDiagnostic(text: string, contentType: string) {
   const trimmed = text.trim();
   const head = trimmed.slice(0, 80).replace(/\s+/g, " ");
@@ -452,6 +467,7 @@ async function fetchRssFeed(url: string): Promise<{ headlines: RawNewsHeadline[]
     }
     const text = await response.text();
     const contentType = response.headers.get("content-type") ?? "";
+    const rawCount = rawFeedItemCount(text, contentType);
     let parsed: RawNewsHeadline[];
     try {
       parsed = parseFeed(text, url, contentType);
@@ -469,7 +485,10 @@ async function fetchRssFeed(url: string): Promise<{ headlines: RawNewsHeadline[]
       };
     }
     if (parsed.length === 0) {
-      return { headlines: [], health: { url, source, health: "EMPTY", statusCode: response.status, headlineCount: 0 } };
+      const reason = rawCount > 0
+        ? `0 accepted after filters (${rawCount} raw items; ${contentType || "unknown content-type"})`
+        : `0 raw feed items (${contentType || "unknown content-type"})`;
+      return { headlines: [], health: { url, source, health: "EMPTY", statusCode: response.status, headlineCount: 0, error: reason } };
     }
     const latestPublishedAt = parsed
       .map((item) => item.publishedAt)
