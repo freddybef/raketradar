@@ -312,7 +312,89 @@ function parseRssOrAtom(xml: string, sourceUrl: string): RawNewsHeadline[] {
         category,
       };
     })
-    .filter((item): item is RawNewsHeadline => Boolean(item))
+    .filter((item): item is RawNewsHeadline => Boolean(item));
+}
+
+type JsonNewsLike = {
+  id?: unknown;
+  guid?: unknown;
+  title?: unknown;
+  headline?: unknown;
+  name?: unknown;
+  summary?: unknown;
+  description?: unknown;
+  url?: unknown;
+  link?: unknown;
+  publishedAt?: unknown;
+  published_at?: unknown;
+  pubDate?: unknown;
+  date?: unknown;
+  updated?: unknown;
+  category?: unknown;
+  categories?: unknown;
+  ticker?: unknown;
+  company?: unknown;
+  issuer?: unknown;
+};
+
+function textValue(value: unknown) {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function jsonItems(payload: unknown): JsonNewsLike[] {
+  if (Array.isArray(payload)) return payload.filter((item): item is JsonNewsLike => typeof item === "object" && item !== null);
+  if (typeof payload !== "object" || payload === null) return [];
+  const record = payload as Record<string, unknown>;
+  const candidate = record.items ?? record.data ?? record.entries ?? record.articles ?? record.news ?? record.releases;
+  return Array.isArray(candidate) ? candidate.filter((item): item is JsonNewsLike => typeof item === "object" && item !== null) : [];
+}
+
+function parseJsonFeed(text: string, sourceUrl: string): RawNewsHeadline[] {
+  const source = sourceFromUrl(sourceUrl);
+  const parsed = JSON.parse(text) as unknown;
+  return jsonItems(parsed)
+    .map((item, index): RawNewsHeadline | null => {
+      const headline = textValue(item.title) ?? textValue(item.headline) ?? textValue(item.name);
+      if (!headline) return null;
+      const summary = textValue(item.summary) ?? textValue(item.description);
+      const combinedHeadline = summary ? `${headline}. ${summary}` : headline;
+      const publishedAt =
+        textValue(item.publishedAt) ??
+        textValue(item.published_at) ??
+        textValue(item.pubDate) ??
+        textValue(item.date) ??
+        textValue(item.updated) ??
+        nowIso();
+      const category = categoryGuess(combinedHeadline, textValue(item.category));
+      if (!looksTradableHeadline(combinedHeadline, category)) return null;
+      const resolvedCompany = resolveNordicCompany(combinedHeadline);
+      return {
+        id: textValue(item.id) ?? textValue(item.guid) ?? `${source}-${index}-${headline.slice(0, 40)}`,
+        ticker: textValue(item.ticker) ?? resolvedCompany.ticker,
+        company: textValue(item.company) ?? textValue(item.issuer) ?? resolvedCompany.company,
+        headline,
+        source,
+        publishedAt: new Date(publishedAt).toISOString(),
+        url: textValue(item.url) ?? textValue(item.link),
+        category,
+      };
+    })
+    .filter((item): item is RawNewsHeadline => Boolean(item));
+}
+
+function parseFeed(text: string, sourceUrl: string, contentType: string) {
+  const trimmed = text.trim();
+  const looksJson = contentType.includes("json") || trimmed.startsWith("{") || trimmed.startsWith("[");
+  if (looksJson) return parseJsonFeed(trimmed, sourceUrl);
+  return parseRssOrAtom(trimmed, sourceUrl);
+}
+
+function feedFormatDiagnostic(text: string, contentType: string) {
+  const trimmed = text.trim();
+  const head = trimmed.slice(0, 80).replace(/\s+/g, " ");
+  if (/^<!doctype html/i.test(trimmed) || /^<html/i.test(trimmed)) return `HTML response instead of feed (${contentType || "unknown content-type"})`;
+  if (trimmed.length === 0) return `empty response (${contentType || "unknown content-type"})`;
+  return `invalid feed format (${contentType || "unknown content-type"}; starts: ${head})`;
 }
 
 export function rssNewsProvider(urls: string[]): NewsProvider {
@@ -323,11 +405,14 @@ export function rssNewsProvider(urls: string[]): NewsProvider {
       const results = await Promise.allSettled(
         urls.map(async (url) => {
           const response = await fetch(url, {
-            headers: { "User-Agent": "RaketRadar/1.0 RSS headline ingestion" },
+            headers: {
+              Accept: "application/json,application/rss+xml,application/atom+xml,text/xml,application/xml,text/plain,*/*",
+              "User-Agent": "RaketRadar/1.0 RSS headline ingestion",
+            },
             cache: "no-store",
           });
           if (!response.ok) throw new Error(`${url} returned ${response.status}`);
-          return parseRssOrAtom(await response.text(), url);
+          return parseFeed(await response.text(), url, response.headers.get("content-type") ?? "");
         }),
       );
       const errors = results
@@ -353,7 +438,10 @@ async function fetchRssFeed(url: string): Promise<{ headlines: RawNewsHeadline[]
   const source = sourceFromUrl(url);
   try {
     const response = await fetch(url, {
-      headers: { "User-Agent": "RaketRadar/1.0 RSS headline ingestion" },
+      headers: {
+        Accept: "application/json,application/rss+xml,application/atom+xml,text/xml,application/xml,text/plain,*/*",
+        "User-Agent": "RaketRadar/1.0 RSS headline ingestion",
+      },
       cache: "no-store",
     });
     if (!response.ok) {
@@ -362,7 +450,24 @@ async function fetchRssFeed(url: string): Promise<{ headlines: RawNewsHeadline[]
         health: { url, source, health: "ERROR", statusCode: response.status, headlineCount: 0, error: `HTTP ${response.status}` },
       };
     }
-    const parsed = parseRssOrAtom(await response.text(), url);
+    const text = await response.text();
+    const contentType = response.headers.get("content-type") ?? "";
+    let parsed: RawNewsHeadline[];
+    try {
+      parsed = parseFeed(text, url, contentType);
+    } catch {
+      return {
+        headlines: [],
+        health: {
+          url,
+          source,
+          health: "ERROR",
+          statusCode: response.status,
+          headlineCount: 0,
+          error: feedFormatDiagnostic(text, contentType),
+        },
+      };
+    }
     if (parsed.length === 0) {
       return { headlines: [], health: { url, source, health: "EMPTY", statusCode: response.status, headlineCount: 0 } };
     }
