@@ -255,7 +255,25 @@ export function rankNewsFreshness(items: NormalizedNewsItem[]) {
         0,
         (Date.now() - new Date(item.publishedAt).getTime()) / (1000 * 60 * 60)
       );
-      const freshnessScore = Math.max(0, Math.round(100 - ageHours * 4));
+      let freshnessScore = Math.max(0, Math.round(100 - ageHours * 6));
+
+      const hasHighImpactTrigger = item.triggers.some(
+        (trigger) =>
+          trigger.impactScore >= 82 ||
+          ["order", "kontrakt", "FDA", "studie/resultat", "bud"].includes(trigger.type)
+      );
+
+      if (!hasHighImpactTrigger && ageHours > 4) {
+        freshnessScore = Math.max(0, freshnessScore - 18);
+      }
+
+      if (ageHours > 12) {
+        freshnessScore = Math.max(0, freshnessScore - 12);
+      }
+
+      if (ageHours > 24) {
+        freshnessScore = Math.max(0, freshnessScore - 25);
+      }
 
       return {
         ...item,
