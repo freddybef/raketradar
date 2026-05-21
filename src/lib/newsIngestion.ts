@@ -257,7 +257,8 @@ function resolveNordicCompany(headline: string): { ticker?: string; company?: st
   if (tickerMatch) {
     const entry = SWEDISH_UNIVERSE.find((candidate) => candidate.ticker === tickerMatch)
       ?? MANUAL_NORDIC_ALIASES.find((candidate) => candidate.ticker === tickerMatch);
-    return { ticker: tickerMatch, company: entry?.companyName ?? entry?.company };
+    const company = entry && "companyName" in entry ? entry.companyName : entry?.company;
+    return { ticker: tickerMatch, company };
   }
   const normalized = normalizeCompanyName(headline);
   const aliasMatch = NORDIC_COMPANY_ALIASES
