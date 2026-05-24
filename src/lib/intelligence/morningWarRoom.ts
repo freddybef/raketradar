@@ -194,12 +194,19 @@ function rawComboKey(row: WarRoomOutcomeRow) {
   return mix.slice(0, 4).join("+").toLowerCase();
 }
 
+function normalizedRawTrigger(row: WarRoomOutcomeRow) {
+  const key = rawComboKey(row);
+  if (/insider/.test(key) && /buy/.test(key)) return "FI insider";
+  return key;
+}
+
 function syntheticDetailedOutcome(row: WarRoomOutcomeRow): DetailedSignalOutcome | null {
   if (row.maxUpsidePercent === null || row.followThroughQuality === null) return null;
   const maxMovePct = Math.round(row.maxUpsidePercent * 10) / 10;
   const fadePct = Math.round(Math.abs(row.downsidePercent ?? 0) * 10) / 10;
   const outcomeLabel = rawOutcomeLabel(row);
-  const triggerType = rawComboKey(row);
+  const comboKey = rawComboKey(row);
+  const triggerType = normalizedRawTrigger(row);
   const insiderActivity = row.catalystMix.some((item) => /insider|buy/i.test(item)) ? 100 : 0;
   const floatProfile = row.catalystMix.some((item) => /low_float|stealth|squeeze/i.test(item)) ? "low" : "unknown";
 
@@ -208,7 +215,7 @@ function syntheticDetailedOutcome(row: WarRoomOutcomeRow): DetailedSignalOutcome
     ticker: row.ticker,
     timestamp: new Date().toISOString(),
     triggerType,
-    catalyst: row.catalystMix.join("+") || "signal",
+    catalyst: triggerType,
     marketRegime: "raw_outcome",
     insiderActivity,
     floatProfile,
@@ -232,7 +239,7 @@ function syntheticDetailedOutcome(row: WarRoomOutcomeRow): DetailedSignalOutcome
     continuationScore: Math.max(0, Math.min(100, Math.round(row.followThroughQuality))),
     outcomeLabel,
     outcomeClassification: normalizeOutcomeClassification(outcomeLabel),
-    triggerCombo: triggerType,
+    triggerCombo: comboKey,
     learningWeight: 1,
     outcomeStatus: "evaluated",
   };
