@@ -1,5 +1,6 @@
 import type { LiveMarketReaction, LiveMarketReactionProvider } from "@/lib/intelligence/liveMarketReaction";
 import { calculateLiveMarketReactions } from "@/lib/intelligence/liveMarketReaction";
+import { buildDiscoveryPrefilterUniverse, type DiscoveryPrefilterResult } from "@/lib/intelligence/discoveryPrefilter";
 import { getSwedishEquityUniverse, type SwedishEquityUniverseEntry } from "@/lib/market/swedishEquityUniverse";
 import { getYahooAliasDebugSnapshot, resetYahooAliasDebug, type YahooAliasDebugEntry } from "@/lib/providers/liveMarketReactionProvider";
 
@@ -74,6 +75,10 @@ export interface AutonomousDiscoveryResult {
     rvolStatus: "available" | "missing_daily_baseline" | "missing_volume" | "missing_quote";
   }>;
   aliasDebug: YahooAliasDebugEntry[];
+  prefilterDebug: DiscoveryPrefilterResult["debug"] & {
+    finalScannedCount: number;
+    selectedSample: string[];
+  };
   suppressedByReason: Array<{ reason: string; count: number }>;
   bucketCounts: Record<DiscoveryBucket, number>;
   scanned: number;
@@ -332,11 +337,30 @@ function missedReason(candidate: AutonomousDiscoveryCandidate): MissedMover["rea
 export async function runAutonomousDiscoveryScan(input: {
   provider: LiveMarketReactionProvider;
   extraTickers?: string[];
+  usePrefilter?: boolean;
 }): Promise<AutonomousDiscoveryResult> {
   const extraEntries = discoveryExpansionUniverse(input.extraTickers);
   const merged = new Map<string, SwedishEquityUniverseEntry>();
   [...getSwedishEquityUniverse().filter((entry) => entry.verified), ...extraEntries].forEach((entry) => merged.set(entry.ticker, entry));
-  const universe = [...merged.values()];
+  const baseUniverse = [...merged.values()];
+  const prefilter = input.usePrefilter === false
+    ? null
+    : await buildDiscoveryPrefilterUniverse({
+      baseUniverseTickers: baseUniverse.map((entry) => entry.ticker),
+      extraTickers: [...(input.extraTickers ?? []), ...envExtraTickers()],
+    }).catch(() => null);
+  const prefilterTickers = new Set((prefilter?.selectedTickers ?? []).map((ticker) => ticker.toUpperCase()));
+  const universe = prefilterTickers.size > 0
+    ? [...prefilterTickers].map((ticker) => merged.get(ticker) ?? {
+      ticker,
+      companyName: ticker,
+      exchange: "Sweden" as const,
+      sector: "prefilter dynamic",
+      marketCapBucket: "small" as const,
+      liquidityBucket: "normal" as const,
+      verified: true,
+    })
+    : baseUniverse;
   resetYahooAliasDebug();
   const reactions = await calculateLiveMarketReactions({
     symbols: universe.map((entry) => entry.ticker),
@@ -388,6 +412,19 @@ export async function runAutonomousDiscoveryScan(input: {
     };
   });
   const aliasDebug = getYahooAliasDebugSnapshot();
+  const prefilterDebug = {
+    ...(prefilter?.debug ?? {
+      enabled: false,
+      maxTickers: Number(process.env.DISCOVERY_PREFILTER_MAX_TICKERS ?? 400),
+      baseUniverseSize: baseUniverse.length,
+      prefilterCandidates: 0,
+      finalSelectedCount: 0,
+      fallbackReason: "prefilter unavailable or disabled",
+      topSourceReasons: [],
+    }),
+    finalScannedCount: universe.length,
+    selectedSample: universe.slice(0, 20).map((entry) => entry.ticker),
+  };
   const aliasDebugByTicker = new Map(aliasDebug.map((entry) => [entry.ticker.toUpperCase(), entry]));
   function missingReason(entry: SwedishEquityUniverseEntry) {
     const debug = aliasDebugByTicker.get(entry.ticker.toUpperCase());
@@ -507,13 +544,14 @@ export async function runAutonomousDiscoveryScan(input: {
 
   return {
     generatedAt: new Date().toISOString(),
-    universeSize: universe.length,
+    universeSize: baseUniverse.length,
     scannedCount: universe.length,
     liveHits: reactions.length,
     missingDataCount: Math.max(0, universe.length - reactions.length),
     coverageByExchange,
     missingTickers,
     aliasDebug,
+    prefilterDebug,
     suppressedByReason,
     bucketCounts,
     scanned: reactions.length,
