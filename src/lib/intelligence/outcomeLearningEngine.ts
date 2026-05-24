@@ -4,6 +4,10 @@ import {
   type OutcomePerformanceAnalytics,
 } from "@/lib/intelligence/performanceAnalytics";
 import type { DetailedSignalOutcome } from "@/lib/intelligence/outcomeTracker";
+import {
+  normalizeOutcomeClassification,
+  type OutcomeLabel,
+} from "@/lib/intelligence/outcomeTracker";
 
 export interface RawSignalOutcomeRow {
   id?: string;
@@ -80,6 +84,13 @@ export interface OutcomeLearningReport {
   }>;
   topContinuationSetups: ComboPerformance[];
   analytics: OutcomePerformanceAnalytics;
+  sourceHealth: {
+    detailedRows: number;
+    rawRows: number;
+    rawEvaluatedRows: number;
+    syntheticDetailedRows: number;
+    analyticsSource: "detailed" | "raw_fallback" | "mixed" | "empty";
+  };
 }
 
 function clamp(value: number, min = -25, max = 25) {
@@ -133,6 +144,64 @@ function rawComboKey(row: RawSignalOutcomeRow) {
     .toLowerCase();
 }
 
+function rawOutcomeLabel(row: RawSignalOutcomeRow): OutcomeLabel {
+  const maxUpside = row.maxUpsidePercent ?? 0;
+  const downside = row.downsidePercent ?? 0;
+  const quality = row.followThroughQuality ?? 0;
+  if (maxUpside >= 18 && quality >= 72 && downside > -8) return "EXPLODED";
+  if (maxUpside >= 12 && quality >= 55) return "SQUEEZE";
+  if (quality >= 60 || maxUpside >= 8) return "CONTINUED";
+  if (maxUpside >= 5 && quality < 45) return "FADED";
+  if (maxUpside < 3 && downside <= -4) return "FAILED";
+  return "DEAD";
+}
+
+function syntheticDetailedFromRaw(row: RawSignalOutcomeRow): DetailedSignalOutcome | null {
+  if (row.observedPrice === null || row.maxUpsidePercent === null || row.followThroughQuality === null) return null;
+  const triggerType = rawComboKey(row) || "signal";
+  const maxMovePct = Math.round((row.maxUpsidePercent ?? 0) * 10) / 10;
+  const fadePct = Math.round(Math.abs(row.downsidePercent ?? 0) * 10) / 10;
+  const outcomeLabel = rawOutcomeLabel(row);
+  const catalyst = row.catalystMix.join("+") || "signal";
+  const insiderActivity = row.catalystMix.some((item) => /insider|buy/i.test(item)) ? 100 : 0;
+  const floatProfile = row.catalystMix.some((item) => /low_float|stealth|squeeze/i.test(item)) ? "low" : "unknown";
+  const continuationScore = Math.max(0, Math.min(100, Math.round(row.followThroughQuality ?? 0)));
+
+  return {
+    signalKey: row.signalId,
+    ticker: row.ticker,
+    timestamp: row.triggeredAt,
+    triggerType,
+    catalyst,
+    marketRegime: row.regime ?? "unknown",
+    insiderActivity,
+    floatProfile,
+    crowding: 0,
+    overnightStrength: 0,
+    openingGap: 0,
+    first5mMove: row.horizon === "5m" ? maxMovePct : 0,
+    first15mMove: row.horizon === "15m" ? maxMovePct : 0,
+    first30mMove: row.horizon === "30m" ? maxMovePct : 0,
+    first60mMove: row.horizon === "60m" ? maxMovePct : 0,
+    intradayHigh: maxMovePct,
+    closePerformance: 0,
+    nextDayOpenPerformance: row.horizon === "next_day_open" ? maxMovePct : 0,
+    preOpenScore: row.conviction ?? 0,
+    openingPlan: "raw_outcome_canonical_fallback",
+    openPrice: row.entryPrice > 0 ? row.entryPrice : null,
+    highPrice: null,
+    closePrice: row.observedPrice,
+    maxMovePct,
+    fadePct,
+    continuationScore,
+    outcomeLabel,
+    outcomeClassification: normalizeOutcomeClassification(outcomeLabel),
+    triggerCombo: triggerType,
+    learningWeight: 1,
+    outcomeStatus: "evaluated",
+  };
+}
+
 function rawComboPerformance(rows: RawSignalOutcomeRow[]): ComboPerformance[] {
   const evaluated = rows.filter(
     (row) => row.observedPrice !== null && row.maxUpsidePercent !== null && row.followThroughQuality !== null
@@ -181,7 +250,14 @@ export function buildOutcomeLearningReport(
   detailedOutcomes: DetailedSignalOutcome[],
   signalOutcomes: RawSignalOutcomeRow[]
 ): OutcomeLearningReport {
-  const analytics = analyzeOutcomePerformance(detailedOutcomes);
+  const syntheticFromRaw = signalOutcomes
+    .map((row) => syntheticDetailedFromRaw(row))
+    .filter((item): item is DetailedSignalOutcome => Boolean(item));
+  const detailedEvaluated = detailedOutcomes.filter((item) => item.outcomeStatus !== "pending");
+  const analyticsInput = detailedEvaluated.length > 0
+    ? [...detailedOutcomes, ...syntheticFromRaw]
+    : syntheticFromRaw;
+  const analytics = analyzeOutcomePerformance(analyticsInput);
   const rawCombos = rawComboPerformance(signalOutcomes);
   const bestTriggerCombos = analytics.topPerformingTriggerCombos.length > 0 ? analytics.topPerformingTriggerCombos : rawCombos.slice(0, 8);
   const worstTriggerCombos =
@@ -197,6 +273,7 @@ export function buildOutcomeLearningReport(
       return acc;
     }, [])
     .map(weightFromCombo);
+  const recentOutcomeSummary = summarize(detailedOutcomes, signalOutcomes);
 
   return {
     generatedAt: new Date().toISOString(),
@@ -211,7 +288,7 @@ export function buildOutcomeLearningReport(
       reason: "Hög andel fade/fake spike efter stark pre-open signal.",
     })),
     currentAdaptiveWeights,
-    recentOutcomeSummary: summarize(detailedOutcomes, signalOutcomes),
+    recentOutcomeSummary,
     confidenceChanges: currentAdaptiveWeights.map((item) => ({
       key: item.key,
       delta: item.confidenceDelta,
@@ -219,7 +296,7 @@ export function buildOutcomeLearningReport(
     })),
     regimePerformance: analytics.regimePerformance,
     missingOutcomeData: missingData(signalOutcomes),
-    recentClassifications: detailedOutcomes.slice(0, 20).map((item) => ({
+    recentClassifications: analyticsInput.slice(0, 20).map((item) => ({
       signalKey: item.signalKey,
       ticker: item.ticker,
       trigger: item.triggerType,
@@ -230,5 +307,19 @@ export function buildOutcomeLearningReport(
     })),
     topContinuationSetups: analytics.topContinuationSetups.length > 0 ? analytics.topContinuationSetups : rawCombos.filter((item) => item.winRate >= 50).slice(0, 5),
     analytics,
+    sourceHealth: {
+      detailedRows: detailedOutcomes.length,
+      rawRows: signalOutcomes.length,
+      rawEvaluatedRows: syntheticFromRaw.length,
+      syntheticDetailedRows: syntheticFromRaw.length,
+      analyticsSource:
+        analyticsInput.length === 0
+          ? "empty"
+          : detailedEvaluated.length > 0 && syntheticFromRaw.length > 0
+            ? "mixed"
+            : detailedEvaluated.length > 0
+              ? "detailed"
+              : "raw_fallback",
+    },
   };
 }
