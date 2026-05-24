@@ -145,6 +145,20 @@ export function analyzeOutcomePerformance(outcomes: DetailedSignalOutcome[]): Ou
   };
 }
 
+function calibratedWinRate(wins: number, sampleSize: number) {
+  const priorWins = 2;
+  const priorLosses = 2;
+  return Math.round(((wins + priorWins) / (sampleSize + priorWins + priorLosses)) * 100);
+}
+
+function sampleReliability(sampleSize: number) {
+  if (sampleSize >= 12) return 1;
+  if (sampleSize >= 6) return 0.72;
+  if (sampleSize >= 3) return 0.48;
+  if (sampleSize >= 1) return 0.25;
+  return 0;
+}
+
 export function historicalStatsForSetup(
   outcomes: DetailedSignalOutcome[],
   input: { ticker: string; trigger: string; catalyst: string; marketRegime: string }
@@ -157,12 +171,17 @@ export function historicalStatsForSetup(
         item.marketRegime.split(":")[0] === input.marketRegime.split(":")[0])
   );
   const wins = similar.filter(isWin);
+  const rawWinRate = similar.length > 0 ? Math.round((wins.length / similar.length) * 100) : 50;
+  const winRate = similar.length > 0 ? calibratedWinRate(wins.length, similar.length) : 50;
+  const reliability = sampleReliability(similar.length);
 
   return {
     sampleSize: similar.length,
-    winRate: similar.length > 0 ? Math.round((wins.length / similar.length) * 100) : 50,
-    avgContinuation: round(average(similar.map((item) => item.continuationScore))),
-    avgFadeRisk: round(average(similar.map((item) => item.fadePct))),
+    rawWinRate,
+    winRate,
+    reliability,
+    avgContinuation: round(average(similar.map((item) => item.continuationScore)) * reliability + 50 * (1 - reliability)),
+    avgFadeRisk: round(average(similar.map((item) => item.fadePct)) * reliability),
     similarOutcome: similar[0]?.outcomeLabel as OutcomeLabel | undefined,
   };
 }
