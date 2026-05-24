@@ -66,6 +66,12 @@ Known persistence areas in code:
 - agent alerts
 - learning observations
 
+Verified locally:
+- latest run changes active
+- learning observations active
+- case snapshots active
+- memory endpoint returns active persistence
+
 ### Scheduler
 
 `vercel.json` defines cron runs for `/api/intelligence/run`:
@@ -89,6 +95,11 @@ Optional/additional job exists:
 
 The API route supports POST and GET to `/api/intelligence/run`, protected by `INTELLIGENCE_RUN_SECRET` and/or `CRON_SECRET` outside localhost.
 
+Lifecycle retention is now wired into the intelligence runner:
+- fresh agent snapshots are combined with retained continuation/cooling snapshots
+- missing but still relevant cases can stay in cooling states before terminal drop
+- runner summary exposes lifecycle counts
+
 ### Market coverage
 
 There is a hardcoded verified Swedish/Nordic universe plus optional environment-driven additions via `SWEDISH_EQUITY_UNIVERSE`.
@@ -97,7 +108,22 @@ There is also an autonomous discovery expansion universe plus optional additions
 - `RAKETRADAR_EXTRA_DISCOVERY_TICKERS`
 - `DISCOVERY_EXTRA_TICKERS`
 
-Current market data provider is Yahoo chart data with alias mapping and suffix attempts for Nordic names. The provider records alias debug data for coverage diagnosis.
+Verified local coverage snapshot on 2026-05-24:
+- universeSize: 154
+- scannedCount: 76
+- liveHits: 74
+- missingDataCount: 2
+- coveragePercent: 48 overall due scanned count semantics
+- exchange coverage:
+  - Sweden: 55/57 live hits, 96%
+  - First North: 10/10, 100%
+  - Spotlight: 7/7, 100%
+  - Nordic SME: 2/2, 100%
+- missing examples: BERGMAN, MEDI, both wrong_market_suffix
+
+Interpretation:
+- RR is no longer broadly market-data blind.
+- Remaining live coverage problem is ticker/suffix robustness for a small set of names.
 
 ### Market reaction logic
 
@@ -149,17 +175,52 @@ Discovery buckets include:
 - RISK
 - SUPPRESSED
 
+### Lifecycle / memory logic
+
+Previously verified issue:
+- cases disappeared immediately when missing from current agent scan
+- this created noisy `dropped` events and weak continuation memory
+
+Current fix:
+- missing but lifecycle-relevant cases are retained for a grace window
+- cooling states introduced:
+  - COOLING_WATCH
+  - COOLING_CONTINUATION_WATCH
+  - COOLING_RISK_WATCH
+- terminal DROPPED snapshots are appended only after retention/no-confirmation
+- retention state changes are lower severity than real upgrades/downgrades
+
+Purpose:
+- RR should behave like a trading companion with multi-run memory, not a stateless screener.
+
+### Outcome loop
+
+Verified locally:
+- `/api/intelligence/outcomes` works
+- outcomeLoopWorking: true
+- previous blocker `market_data_missing_for_outcomes` was removed after improving Yahoo outcome symbol resolution
+- trigger-combo learning started producing results, including insider+buy+stealth continuation data
+
+Important provider fix:
+- outcome market-data provider now uses robust alias/suffix candidate resolution similar to live provider
+- this replaced the previous weak `TICKER.ST`-style mapping
+
+Known limitation:
+- outcome data model appears split between `signal_outcomes` and `signal_outcomes_detailed`
+- learning report and standard outcome rows can report different evaluated/pending counts
+- this is the next likely source-of-truth problem
+
 ## Current risk / suspected main blocker
 
-The likely main blocker is still market-data blindness rather than UI or scoring sophistication.
+Market coverage is no longer the main blocker.
 
-Most important unknowns to verify next:
-1. How many universe tickers return usable intraday bars today?
-2. How many return daily baseline but no intraday bars?
-3. Which exchanges/suffixes fail most often?
-4. Are provider runs actually being saved in Supabase in production?
-5. Are case_state_snapshots and learning_observations being populated over multiple days?
-6. Are alerts created from real state changes or mostly noisy rerank churn?
+Current main blocker:
+- outcome truth-model / datakonsistens
+
+Specific risk:
+- setup learning may be built from multiple tables with inconsistent meanings
+- evaluated/pending counts may not reflect the same source as trigger-combo learning
+- RR needs one coherent outcome truth layer before decision weighting should depend heavily on historical performance
 
 ## Current constraints
 
@@ -179,20 +240,22 @@ Allowed now:
 - persistence health checks
 - continuation memory checks
 - reducing false HOT/100% cases when proven by data
+- outcome truth-model diagnostics and consolidation
 
 ## Next single blocker to attack
 
-Verify real live coverage.
+Outcome truth-model / setup-performance consistency.
 
 Concrete next task:
-- Run or inspect `/api/intelligence/run` output and debug snapshot.
-- Measure scanned count, live hits, missing data count, missing tickers, alias attempts, and exchange-level coverage.
-- If coverage is weak, fix ticker/provider mapping before touching UI or scoring.
+1. Inspect how `signal_outcomes`, `signal_outcomes_detailed`, and outcome learning report relate.
+2. Identify which table should be canonical for setup performance.
+3. Fix only the smallest inconsistency that prevents reliable evaluated/pending and trigger-combo learning.
+4. Verify with `/api/intelligence/outcomes`.
 
 Decision rule:
-- If coverage is under acceptable level, market coverage is blocker #1.
-- If coverage is good but alerts are noisy, continuation/state memory is blocker #1.
-- If both are good, then improve buy/hold/sell read quality.
+- If outcome tables disagree, fix canonical mapping first.
+- If outcome rows are sparse but detailed outcomes work, expose that clearly instead of mixing semantics.
+- If both are consistent, then use outcome learning to adjust buy/hold/sell conviction.
 
 ## Working rules
 
