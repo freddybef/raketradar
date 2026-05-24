@@ -15,7 +15,12 @@ import { collectPendingOutcomes } from "@/lib/intelligence/outcomeCollector";
 import { calculateLiveMarketReactions } from "@/lib/intelligence/liveMarketReaction";
 import { getSwedishEquityUniverse } from "@/lib/market/swedishEquityUniverse";
 import { yahooLiveMarketReactionProvider } from "@/lib/providers/liveMarketReactionProvider";
-import { detectRankingChanges, snapshotsFromAgent } from "@/lib/intelligence/runner/changeDetection";
+import {
+  appendTerminalDroppedSnapshots,
+  applyCaseLifecycleRetention,
+  detectRankingChanges,
+  snapshotsFromAgent,
+} from "@/lib/intelligence/runner/changeDetection";
 import { buildLearningObservations } from "@/lib/intelligence/runner/learningHarvest";
 
 export type IntelligenceJob = "marketReaction" | "discovery" | "warRoom" | "agentLoop" | "outcomes" | "health";
@@ -75,8 +80,10 @@ export async function runIntelligenceJobs(input?: { jobs?: IntelligenceJob[]; re
   await runJob("health", () => getIntelligenceDebugSnapshot());
 
   const previousSnapshots = await getLatestCaseStateSnapshots();
-  const currentSnapshots = agent ? snapshotsFromAgent(agent) : [];
-  const changes = detectRankingChanges(previousSnapshots, currentSnapshots);
+  const freshSnapshots = agent ? snapshotsFromAgent(agent) : [];
+  const retainedSnapshots = applyCaseLifecycleRetention(previousSnapshots, freshSnapshots);
+  const changes = detectRankingChanges(previousSnapshots, retainedSnapshots);
+  const currentSnapshots = appendTerminalDroppedSnapshots(retainedSnapshots, previousSnapshots, changes);
   const observations = buildLearningObservations({
     observedAt: new Date().toISOString(),
     sessionMode: agent?.sessionMode ?? reason,
@@ -103,6 +110,12 @@ export async function runIntelligenceJobs(input?: { jobs?: IntelligenceJob[]; re
     status,
     failedJobs,
     results,
+    lifecycle: {
+      previousSnapshots: previousSnapshots.length,
+      freshSnapshots: freshSnapshots.length,
+      retainedSnapshots: retainedSnapshots.length - freshSnapshots.length,
+      persistedSnapshots: currentSnapshots.length,
+    },
     changes,
     saved: {
       snapshots: snapshotSave.saved,
