@@ -23,6 +23,10 @@ function countBy(values: string[]) {
   }, {});
 }
 
+function firstItems<T>(value: T[] | null | undefined, count = 10) {
+  return Array.isArray(value) ? value.slice(0, count) : [];
+}
+
 export async function GET(request: NextRequest) {
   if (!isAuthorized(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -67,11 +71,11 @@ export async function GET(request: NextRequest) {
       })),
     },
     learningReport: {
-      evaluatedCount: learningReport.evaluatedCount,
-      pendingCount: learningReport.pendingCount,
-      topContinuationSetups: learningReport.topContinuationSetups.slice(0, 10),
-      topPerformingTriggerCombos: learningReport.topPerformingTriggerCombos.slice(0, 10),
-      worstTriggerCombos: learningReport.worstTriggerCombos.slice(0, 10),
+      evaluatedCount: learningReport.evaluatedCount ?? 0,
+      pendingCount: learningReport.pendingCount ?? 0,
+      topContinuationSetups: firstItems(learningReport.topContinuationSetups),
+      topPerformingTriggerCombos: firstItems(learningReport.topPerformingTriggerCombos),
+      worstTriggerCombos: firstItems(learningReport.worstTriggerCombos),
     },
     verdict: {
       outcomeLoopWorking: Boolean(collector && (collector.updated > 0 || evaluated.length > 0)),
