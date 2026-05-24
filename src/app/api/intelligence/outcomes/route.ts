@@ -43,6 +43,8 @@ export async function GET(request: NextRequest) {
 
   const evaluated = afterRows.filter((row) => row.observedPrice !== null || row.followThroughQuality !== null);
   const pending = afterRows.filter((row) => row.observedPrice === null && row.followThroughQuality === null);
+  const recentSummary = learningReport.recentOutcomeSummary;
+  const analytics = learningReport.analytics;
 
   return NextResponse.json({
     generatedAt: new Date().toISOString(),
@@ -51,7 +53,7 @@ export async function GET(request: NextRequest) {
       totalRows: beforeRows.length,
     },
     collector,
-    after: {
+    rawSignalOutcomes: {
       totalRows: afterRows.length,
       evaluated: evaluated.length,
       pending: pending.length,
@@ -70,25 +72,39 @@ export async function GET(request: NextRequest) {
         catalystMix: row.catalystMix,
       })),
     },
-    learningReport: {
-      evaluatedCount: learningReport.evaluatedCount ?? 0,
-      pendingCount: learningReport.pendingCount ?? 0,
-      topContinuationSetups: firstItems(learningReport.topContinuationSetups),
-      topPerformingTriggerCombos: firstItems(learningReport.topPerformingTriggerCombos),
+    canonicalLearningReport: {
+      source: "buildOutcomeLearningReport(detailedOutcomes, signalOutcomes)",
+      recentOutcomeSummary: recentSummary,
+      bestTriggerCombos: firstItems(learningReport.bestTriggerCombos),
       worstTriggerCombos: firstItems(learningReport.worstTriggerCombos),
+      topContinuationSetups: firstItems(learningReport.topContinuationSetups),
+      currentAdaptiveWeights: firstItems(learningReport.currentAdaptiveWeights),
+      missingOutcomeData: firstItems(learningReport.missingOutcomeData, 20),
+      recentClassifications: firstItems(learningReport.recentClassifications, 20),
+    },
+    detailedOutcomeAnalytics: {
+      source: "analyzeOutcomePerformance(signal_outcomes_detailed only)",
+      evaluatedCount: analytics.evaluatedCount,
+      pendingCount: analytics.pendingCount,
+      topPerformingTriggerCombos: firstItems(analytics.topPerformingTriggerCombos),
+      worstTriggerCombos: firstItems(analytics.worstTriggerCombos),
+      topContinuationSetups: firstItems(analytics.topContinuationSetups),
+      topFalsePositives: firstItems(analytics.topFalsePositives),
     },
     verdict: {
-      outcomeLoopWorking: Boolean(collector && (collector.updated > 0 || evaluated.length > 0)),
+      outcomeLoopWorking: Boolean(collector && (collector.updated > 0 || evaluated.length > 0 || recentSummary.evaluatedSignals > 0)),
       blocker:
-        afterRows.length === 0
-          ? "no_signal_outcome_rows"
+        afterRows.length === 0 && recentSummary.totalSignals === 0
+          ? "no_outcome_rows"
           : collector && collector.processed === 0
             ? "no_pending_outcomes_to_process"
             : collector && collector.missingMarketData.length > collector.updated
               ? "market_data_missing_for_outcomes"
-              : evaluated.length === 0
+              : recentSummary.evaluatedSignals === 0
                 ? "no_evaluated_outcomes_yet"
-                : "none_obvious_from_outcomes_endpoint",
+                : analytics.evaluatedCount === 0 && evaluated.length > 0
+                  ? "detailed_outcomes_empty_but_raw_outcomes_working"
+                  : "none_obvious_from_outcomes_endpoint",
     },
   });
 }
