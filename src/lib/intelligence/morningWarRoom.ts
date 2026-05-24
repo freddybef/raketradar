@@ -6,7 +6,8 @@ import type { OvernightContext } from "@/lib/intelligence/overnightContext";
 import type { PreOpenClassification } from "@/lib/intelligence/preOpenClassifier";
 import { calculatePreOpenEdgeScore, type PreOpenEdgeScore } from "@/lib/intelligence/preOpenEdgeScore";
 import { historicalStatsForSetup } from "@/lib/intelligence/performanceAnalytics";
-import type { DetailedSignalOutcome } from "@/lib/intelligence/outcomeTracker";
+import type { DetailedSignalOutcome, OutcomeLabel } from "@/lib/intelligence/outcomeTracker";
+import { normalizeOutcomeClassification } from "@/lib/intelligence/outcomeTracker";
 import { resolveTickerIdentity, type TickerValidationResult } from "@/lib/market/tickerIdentity";
 import type { LiveMarketReaction } from "@/lib/intelligence/liveMarketReaction";
 
@@ -176,8 +177,71 @@ function falsePositiveRatio(ticker: string, outcomes: WarRoomOutcomeRow[]) {
   return Math.round((falsePositives.length / scoped.length) * 100);
 }
 
+function rawOutcomeLabel(row: WarRoomOutcomeRow): OutcomeLabel {
+  const maxUpside = row.maxUpsidePercent ?? 0;
+  const downside = row.downsidePercent ?? 0;
+  const quality = row.followThroughQuality ?? 0;
+  if (maxUpside >= 18 && quality >= 72 && downside > -8) return "EXPLODED";
+  if (maxUpside >= 12 && quality >= 55) return "SQUEEZE";
+  if (quality >= 60 || maxUpside >= 8) return "CONTINUED";
+  if (maxUpside >= 5 && quality < 45) return "FADED";
+  if (maxUpside < 3 && downside <= -4) return "FAILED";
+  return "DEAD";
+}
+
+function rawComboKey(row: WarRoomOutcomeRow) {
+  const mix = row.catalystMix.length > 0 ? row.catalystMix : ["signal"];
+  return mix.slice(0, 4).join("+").toLowerCase();
+}
+
+function syntheticDetailedOutcome(row: WarRoomOutcomeRow): DetailedSignalOutcome | null {
+  if (row.maxUpsidePercent === null || row.followThroughQuality === null) return null;
+  const maxMovePct = Math.round(row.maxUpsidePercent * 10) / 10;
+  const fadePct = Math.round(Math.abs(row.downsidePercent ?? 0) * 10) / 10;
+  const outcomeLabel = rawOutcomeLabel(row);
+  const triggerType = rawComboKey(row);
+  const insiderActivity = row.catalystMix.some((item) => /insider|buy/i.test(item)) ? 100 : 0;
+  const floatProfile = row.catalystMix.some((item) => /low_float|stealth|squeeze/i.test(item)) ? "low" : "unknown";
+
+  return {
+    signalKey: `${row.ticker}-${row.horizon}-raw-outcome`,
+    ticker: row.ticker,
+    timestamp: new Date().toISOString(),
+    triggerType,
+    catalyst: row.catalystMix.join("+") || "signal",
+    marketRegime: "raw_outcome",
+    insiderActivity,
+    floatProfile,
+    crowding: 0,
+    overnightStrength: 0,
+    openingGap: 0,
+    first5mMove: row.horizon === "5m" ? maxMovePct : 0,
+    first15mMove: row.horizon === "15m" ? maxMovePct : 0,
+    first30mMove: row.horizon === "30m" ? maxMovePct : 0,
+    first60mMove: row.horizon === "60m" ? maxMovePct : 0,
+    intradayHigh: maxMovePct,
+    closePerformance: 0,
+    nextDayOpenPerformance: row.horizon === "next_day_open" ? maxMovePct : 0,
+    preOpenScore: 0,
+    openingPlan: "raw_outcome_canonical_fallback",
+    openPrice: null,
+    highPrice: null,
+    closePrice: null,
+    maxMovePct,
+    fadePct,
+    continuationScore: Math.max(0, Math.min(100, Math.round(row.followThroughQuality))),
+    outcomeLabel,
+    outcomeClassification: normalizeOutcomeClassification(outcomeLabel),
+    triggerCombo: triggerType,
+    learningWeight: 1,
+    outcomeStatus: "evaluated",
+  };
+}
+
 function detailedOutcomes(outcomes: WarRoomOutcomeRow[]) {
-  return outcomes.map((row) => row.detailed).filter((row): row is DetailedSignalOutcome => Boolean(row));
+  return outcomes
+    .map((row) => row.detailed ?? syntheticDetailedOutcome(row))
+    .filter((row): row is DetailedSignalOutcome => Boolean(row));
 }
 
 function feedStatus(providerRuns: WarRoomProviderRun[], acceptedNews: number): MorningWarRoomResult["feedStatus"] {
